@@ -1,282 +1,266 @@
 #![allow(dead_code)]
 pub mod slice_rw_lock {
-    mod elem {
+    pub mod inner {
         use std::{
-            marker::PhantomData,
-            ptr::NonNull,
-            sync::{
-                atomic::{fence, AtomicBool, AtomicUsize, Ordering}, Condvar, LockResult, Mutex, PoisonError
-            }, thread::panicking,
+            hint,
+            num::NonZero,
+            process,
+            sync::{Condvar, Mutex},
         };
 
-        struct Metadata {
-            counter: AtomicUsize,
-            poisoned: AtomicBool,
-            guard: (Mutex<RwVariants<usize>>, RwVariants<Condvar>),
+        #[cfg(target_pointer_width = "32")]
+        #[allow(non_camel_case_types)]
+        type counter = u8;
+        #[cfg(target_pointer_width = "64")]
+        #[allow(non_camel_case_types)]
+        type counter = u16;
+
+        #[derive(Clone, Copy)]
+        enum CompetingAccess {
+            SliceReaders(NonZero<counter>),
+            Writers(NonZero<counter>),
+            None,
         }
 
-        struct Data<T> {
-            metadata: Metadata,
-            data: [T],
+        #[repr(u8)]
+        #[derive(Clone, Copy)]
+        enum State {
+            Open,
+            SliceWriter,
+            Other {
+                readers: counter,
+                slice_readers_or_writers: CompetingAccess,
+            },
         }
 
-        struct RwVariants<T> {
-            readers: T,
-            slice_readers: T,
-            writers: T,
-            slice_writers: T,
+        pub(super) struct InnerSliceRwLock {
+            state: Mutex<State>,
+            readers_waker: Condvar,
+            slice_readers_waker: Condvar,
+            writers_waker: Condvar,
+            slice_writers_waker: Condvar,
         }
 
-        pub struct ElemRwLock<T> {
-            idx: usize,
-            data_ptr: NonNull<Data<T>>,
-        }
-
-        impl<T> ElemRwLock<T> {
-            pub fn read(&self) -> LockResult<ElemRwLockReadGuard<'_, T>> {
-                let Data {
-                    metadata:
-                        Metadata {
-                            poisoned,
-                            guard: (lock, RwVariants { readers, .. }),
-                            ..
-                        },
-                    ..
-                } = unsafe { &self.data_ptr.as_ref() };
+        impl InnerSliceRwLock {
+            pub(super) fn read(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
                 let mut guard = unsafe {
-                    readers
-                        .wait(lock.lock().unwrap_unchecked())
+                    self.readers_waker
+                        .wait_while(self.state.lock().unwrap_unchecked(), |&mut state| {
+                            matches!(state, State::SliceWriter)
+                        })
                         .unwrap_unchecked()
                 };
-                guard.readers += 1;
-                drop(guard);
-
-                let ret = ElemRwLockReadGuard {
-                    data_ptr: self.data_ptr,
-                    phantom: PhantomData,
-                };
-                if poisoned.load(Ordering::Relaxed) {
-                    Err(PoisonError::new(ret))
-                } else {
-                    Ok(ret)
+                match &mut *guard {
+                    State::Open => {
+                        *guard = State::Other {
+                            readers: 1,
+                            slice_readers_or_writers: CompetingAccess::None,
+                        }
+                    }
+                    State::Other {
+                        readers: counter::MAX, ..
+                    } => process::abort(),
+                    State::Other { readers, .. } => *readers = unsafe { readers.unchecked_add(1) }, // SAFETY: Checked that overflow cannot occur in the case above
+                    State::SliceWriter =>
+                    // SAFETY: The `Condvar` is guaranteed to return a guard when the state is not `State::SliceWriter`
+                    unsafe { hint::unreachable_unchecked() },
                 }
             }
 
-            pub fn read_slice(&self) -> LockResult<ElemRwLockReadSliceGuard<'_, T>> {
-                let Data {
-                    metadata:
-                        Metadata {
-                            poisoned,
-                            guard: (lock, RwVariants { slice_readers, .. }),
-                            ..
-                        },
-                    ..
-                } = unsafe { &self.data_ptr.as_ref() };
+            pub(super) fn read_slice(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
                 let mut guard = unsafe {
-                    slice_readers
-                        .wait_while(
-                            lock.lock().unwrap_unchecked(),
-                            |&mut RwVariants {
-                                 slice_writers,
-                                 writers,
-                                 ..
-                             }| slice_writers > 0 && writers > 0,
-                        )
-                        .unwrap_unchecked()
-                };
-                guard.slice_readers += 1;
-                drop(guard);
-
-                let ret = ElemRwLockReadSliceGuard {
-                    data_ptr: self.data_ptr,
-                    phantom: PhantomData,
-                };
-                if poisoned.load(Ordering::Relaxed) {
-                    Err(PoisonError::new(ret))
-                } else {
-                    Ok(ret)
-                }
-            }
-
-            pub fn write(&mut self) -> LockResult<ElemRwLockWriteGuard<'_, T>> {
-                let Data {
-                    metadata:
-                        Metadata {
-                            poisoned,
-                            guard: (lock, RwVariants { writers, .. }),
-                            ..
-                        },
-                    ..
-                } = unsafe { &self.data_ptr.as_ref() };
-                let mut guard = unsafe {
-                    writers
-                        .wait(lock.lock().unwrap_unchecked())
-                        .unwrap_unchecked()
-                };
-                guard.writers += 1;
-                drop(guard);
-
-                let ret = ElemRwLockWriteGuard {
-                    data_ptr: self.data_ptr,
-                    phantom: PhantomData,
-                };
-                if poisoned.load(Ordering::Relaxed) {
-                    Err(PoisonError::new(ret))
-                } else {
-                    Ok(ret)
-                }
-            }
-
-            pub fn write_slice(&mut self) -> LockResult<ElemRwLockWriteSliceGuard<'_, T>> {
-                let Data {
-                    metadata:
-                        Metadata {
-                            poisoned,
-                            guard: (lock, RwVariants { slice_writers, .. }),
-                            ..
-                        },
-                    ..
-                } = unsafe { &self.data_ptr.as_ref() };
-                let mut guard = unsafe {
-                    slice_writers
-                        .wait_while(
-                            lock.lock().unwrap_unchecked(),
-                            |&mut RwVariants {
-                                 readers,
-                                 slice_readers,
-                                 ..
-                             }| readers > 0 && slice_readers > 0,
-                        )
-                        .unwrap_unchecked()
-                };
-                guard.slice_writers += 1;
-                drop(guard);
-
-                let ret = ElemRwLockWriteSliceGuard {
-                    data_ptr: self.data_ptr,
-                    phantom: PhantomData,
-                };
-                if poisoned.load(Ordering::Relaxed) {
-                    Err(PoisonError::new(ret))
-                } else {
-                    Ok(ret)
-                }
-            }
-        }
-
-        impl<T> Drop for ElemRwLock<T> {
-            fn drop(&mut self) {
-                let Data {
-                    metadata: Metadata { counter, .. },
-                    ..
-                } = unsafe { &self.data_ptr.as_ref() };
-                if counter.fetch_sub(1, Ordering::Release) != 1 {
-                    return;
-                }
-
-                fence(Ordering::Acquire);
-                let _ = unsafe { Box::from_raw(self.data_ptr.as_ptr()) };
-            }
-        }
-
-        pub struct ElemRwLockReadGuard<'a, T> {
-            data_ptr: NonNull<Data<T>>,
-            phantom: PhantomData<&'a T>,
-        }
-
-        impl<'a, T> Drop for ElemRwLockReadGuard<'a, T> {
-            fn drop(&mut self) {
-                let Data {
-                    metadata:
-                        Metadata {
-                            guard: (lock, RwVariants { slice_writers, .. }),
-                            ..
-                        },
-                    ..
-                } = unsafe { &self.data_ptr.as_ref() };
-                let mut guard = unsafe { lock.lock().unwrap_unchecked() };
-                guard.readers = unsafe { guard.readers.unchecked_sub(1) };
-                if guard.readers == 0 {
-                    slice_writers.notify_all();
-                }
-            }
-        }
-
-        pub struct ElemRwLockReadSliceGuard<'a, T> {
-            data_ptr: NonNull<Data<T>>,
-            phantom: PhantomData<&'a [T]>,
-        }
-
-        impl<'a, T> Drop for ElemRwLockReadSliceGuard<'a, T> {
-            fn drop(&mut self) {
-                let Data {
-                    metadata:
-                        Metadata {
-                            guard:
-                                (
-                                    lock,
-                                    RwVariants {
-                                        writers,
-                                        slice_writers,
+                    self.slice_readers_waker
+                        .wait_while(self.state.lock().unwrap_unchecked(), |&mut state| {
+                            matches!(
+                                state,
+                                State::SliceWriter
+                                    | State::Other {
+                                        slice_readers_or_writers: CompetingAccess::Writers(_),
                                         ..
-                                    },
-                                ),
-                            ..
-                        },
-                    ..
-                } = unsafe { &self.data_ptr.as_ref() };
-                let mut guard = unsafe { lock.lock().unwrap_unchecked() };
-                guard.slice_readers = unsafe { guard.slice_readers.unchecked_sub(1) };
-                if guard.slice_readers == 0 {
-                    writers.notify_all();
-                    slice_writers.notify_all();
+                                    }
+                            )
+                        })
+                        .unwrap_unchecked()
+                };
+                match &mut *guard {
+                    State::Open => {
+                        *guard = State::Other {
+                            readers: 0,
+                            // SAFETY: `1` is clearly within the allowed range of `NonZero<counter>`
+                            slice_readers_or_writers: CompetingAccess::SliceReaders(unsafe {
+                                NonZero::<_>::new_unchecked(1)
+                            }),
+                        }
+                    }
+                    State::Other {
+                        slice_readers_or_writers: slice_readers @ CompetingAccess::None,
+                        ..
+                    } => *slice_readers = CompetingAccess::SliceReaders(unsafe { NonZero::<_>::new_unchecked(1) }), // SAFETY: See comment above
+                    State::Other {
+                        slice_readers_or_writers: CompetingAccess::SliceReaders(NonZero::<counter>::MAX),
+                        ..
+                    } => process::abort(),
+                    State::Other {
+                        slice_readers_or_writers: CompetingAccess::SliceReaders(slice_readers),
+                        ..
+                    } => *slice_readers = unsafe { NonZero::<_>::new_unchecked(slice_readers.get().unchecked_add(1)) }, // SAFETY: Checked that overflow cannot occur in the case above
+                    _ =>
+                    // SAFETY: The `Condvar` is guaranteed to return a guard when the state
+                    // is neither `State::SliceWriter` nor `State::Other {slice_readers_or_writers: CompetingAccess::Writers(_), ..}`
+                    unsafe { hint::unreachable_unchecked() },
                 }
             }
-        }
 
-        pub struct ElemRwLockWriteGuard<'a, T> {
-            data_ptr: NonNull<Data<T>>,
-            phantom: PhantomData<&'a mut T>,
-        }
-
-        impl<'a, T> Drop for ElemRwLockWriteGuard<'a, T> {
-            fn drop(&mut self) {
-                let Data {metadata: Metadata{poisoned, guard: (lock, RwVariants{slice_readers, ..}), ..}, ..} = unsafe { self.data_ptr.as_ref() };
-                if panicking() {
-                    poisoned.store(true, Ordering::Release);
-                }
-                let mut guard = unsafe { lock.lock().unwrap_unchecked() };
-                guard.writers = unsafe { guard.writers.unchecked_sub(1) };
-                if guard.writers == 0 {
-                    slice_readers.notify_all();
+            pub(super) fn write(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
+                let mut guard = unsafe {
+                    self.writers_waker
+                        .wait_while(self.state.lock().unwrap_unchecked(), |&mut state| {
+                            matches!(
+                                state,
+                                State::SliceWriter
+                                    | State::Other {
+                                        slice_readers_or_writers: CompetingAccess::SliceReaders(_),
+                                        ..
+                                    }
+                            )
+                        })
+                        .unwrap_unchecked()
+                };
+                match &mut *guard {
+                    State::Open => {
+                        *guard = State::Other {
+                            readers: 0,
+                            // SAFETY: `1` is clearly within the allowed range of `NonZero<counter>`
+                            slice_readers_or_writers: CompetingAccess::Writers(unsafe {
+                                NonZero::<_>::new_unchecked(1)
+                            }),
+                        }
+                    }
+                    State::Other {
+                        slice_readers_or_writers: writers @ CompetingAccess::None,
+                        ..
+                    } => *writers = CompetingAccess::Writers(unsafe { NonZero::<_>::new_unchecked(1) }), // SAFETY: See comment above
+                    State::Other {
+                        slice_readers_or_writers: CompetingAccess::Writers(NonZero::<counter>::MAX),
+                        ..
+                    } => process::abort(),
+                    State::Other {
+                        slice_readers_or_writers: CompetingAccess::Writers(writers),
+                        ..
+                    } => *writers = unsafe { NonZero::<_>::new_unchecked(writers.get().unchecked_add(1)) }, // SAFETY: Checked that overflow cannot occur in the case above
+                    _ =>
+                    // SAFETY: The `Condvar` is guaranteed to return a guard when the state
+                    // is neither `State::SliceWriter` nor `State::Other {slice_readers_or_writers: CompetingAccess::SliceReaders(_), ..}`
+                    unsafe { hint::unreachable_unchecked() },
                 }
             }
-        }
 
-        pub struct ElemRwLockWriteSliceGuard<'a, T> {
-            data_ptr: NonNull<Data<T>>,
-            phantom: PhantomData<&'a mut [T]>,
-        }
-        
-        impl<'a, T> Drop for ElemRwLockWriteSliceGuard<'a, T> {
-            fn drop(&mut self) {
-                let Data {metadata: Metadata{poisoned, guard: (lock, RwVariants{readers, slice_readers, ..}), ..}, ..} = unsafe { &self.data_ptr.as_ref() };
-                if panicking() {
-                    poisoned.store(true, Ordering::Release);
-                }
-                let mut guard = unsafe { lock.lock().unwrap_unchecked() };
-                guard.slice_writers = unsafe { guard.slice_writers.unchecked_sub(1) };
-                if guard.slice_writers == 0 {
-                    readers.notify_all();
-                    slice_readers.notify_all();
+            pub(super) fn write_slice(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
+                let mut guard = unsafe {
+                    self.slice_writers_waker
+                        .wait_while(self.state.lock().unwrap_unchecked(), |&mut state| {
+                            !matches!(state, State::Open)
+                        })
+                        .unwrap_unchecked()
+                };
+                *guard = State::SliceWriter;
+            }
+
+            // Calling this function when there are no readers is undefined behaviour
+            pub(super) unsafe fn drop_reader(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
+                let mut guard = unsafe { self.state.lock().unwrap_unchecked() };
+                match &mut *guard {
+                    State::Other {
+                        readers: 1,
+                        slice_readers_or_writers: CompetingAccess::None,
+                    } => {
+                        *guard = State::Open;
+                        self.slice_writers_waker.notify_one();
+                    },
+                    // SAFETY: Assuming the number of readers is greater than zero, decrementing the counter will not result in an overflow
+                    State::Other { readers: readers @ 1.., .. } => *readers = unsafe { readers.unchecked_sub(1) },
+                    _ => unsafe { hint::unreachable_unchecked() },
                 }
             }
+
+            // CAlling this function when there are no slice readers is undefined behaviour
+            pub(super) unsafe fn drop_slice_reader(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
+                let mut guard = unsafe { self.state.lock().unwrap_unchecked() };
+                match &mut *guard {
+                    State::Other {
+                        readers: 0,
+                        slice_readers_or_writers: CompetingAccess::SliceReaders(NonZero::<counter>::MIN),
+                    } => {
+                        *guard = State::Open;
+                        self.slice_writers_waker.notify_one();
+                        self.writers_waker.notify_all();
+                    },
+                    State::Other {
+                        slice_readers_or_writers: slice_readers @ CompetingAccess::SliceReaders(NonZero::<counter>::MIN),
+                        ..
+                    } => {
+                        *slice_readers = CompetingAccess::None;
+                        self.writers_waker.notify_all();
+                    },
+                    State::Other {
+                        slice_readers_or_writers: CompetingAccess::SliceReaders(slice_readers),
+                        ..
+                    } => 
+                    // SAFETY: Assuming there are slice readers, we checked above that there are more than one
+                    *slice_readers = unsafe { NonZero::<_>::new_unchecked(slice_readers.get().unchecked_sub(1)) },
+                    _ => unsafe { hint::unreachable_unchecked() },
+                }
+            }
+
+            // Calling this function when there are no writers is undefined behaciour
+            pub(super) unsafe fn drop_writer(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
+                let mut guard = unsafe { self.state.lock().unwrap_unchecked() };
+                match &mut *guard {
+                    State::Other {
+                        readers: 0, 
+                        slice_readers_or_writers: CompetingAccess::Writers(NonZero::<counter>::MIN)
+                    } => {
+                        *guard = State::Open; 
+                        self.slice_writers_waker.notify_one();
+                        self.slice_readers_waker.notify_all();
+                    },
+                    State::Other {
+                        slice_readers_or_writers: writers @ CompetingAccess::Writers(NonZero::<counter>::MIN),
+                        ..
+                    } => {
+                        *writers = CompetingAccess::None;
+                        self.slice_readers_waker.notify_all();
+                    },
+                    State::Other {
+                        slice_readers_or_writers: CompetingAccess::Writers(writers),
+                        ..
+                    } =>
+                    // SAFETY: Assuming there are writers, we checked above that there are more than one
+                    *writers = unsafe { NonZero::<_>::new_unchecked(writers.get().unchecked_sub(1)) },
+                    _ => unsafe { hint::unreachable_unchecked() }
+                }
+            }
+
+            // Calling this function when there is no slice writer is undefined behaviour
+            pub(super) unsafe fn drop_slice_writer(&self) {
+                // SAFETY: Cannot panic while holding a guard to `self.state`
+                let mut guard = unsafe { self.state.lock().unwrap_unchecked() };
+                *guard = State::Open;
+                self.readers_waker.notify_all();
+                self.slice_readers_waker.notify_all();
+                self.slice_writers_waker.notify_all();
+            }
         }
-    
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 }
