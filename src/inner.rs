@@ -1,13 +1,9 @@
 use std::{
-    alloc::{self, Layout, LayoutError},
-    hint,
-    mem::MaybeUninit,
-    process,
-    ptr::{self, NonNull},
+    hint, process,
     sync::atomic::{AtomicU32, Ordering},
 };
 
-pub(super) struct InnerSliceRwLock(AtomicU32);
+pub(crate) struct InnerSliceRwLock(AtomicU32);
 
 impl InnerSliceRwLock {
     const STATE_MASK: u32 = 1;
@@ -16,13 +12,13 @@ impl InnerSliceRwLock {
     const SLICE_READERS_STATE: u32 = 1;
     const EMPTY: u32 = 0;
     const SLICE_WRITER: u32 = 1;
-    pub(super) const GUARDS_COUNT_MAX: u32 = u32::MAX >> Self::STATE_MASK.count_ones();
+    pub(crate) const GUARDS_COUNT_MAX: u32 = u32::MAX >> Self::STATE_MASK.count_ones();
 
-    pub(super) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self(AtomicU32::new(Self::EMPTY))
     }
 
-    pub(super) fn write(&self) {
+    pub(crate) fn write(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::EMPTY {
@@ -62,7 +58,7 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) fn try_write(&self) -> bool {
+    pub(crate) fn try_write(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::EMPTY {
@@ -101,7 +97,7 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) fn read_slice(&self) {
+    pub(crate) fn read_slice(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::EMPTY {
@@ -141,7 +137,7 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) fn try_read_slice(&self) -> bool {
+    pub(crate) fn try_read_slice(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::EMPTY {
@@ -180,7 +176,7 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) fn write_slice(&self) {
+    pub(crate) fn write_slice(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::EMPTY {
@@ -203,7 +199,7 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) fn try_write_slice(&self) -> bool {
+    pub(crate) fn try_write_slice(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::EMPTY {
@@ -225,7 +221,7 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) unsafe fn drop_writer_unchecked(&self) {
+    pub(crate) unsafe fn drop_writer_unchecked(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             let counter = loaded >> Self::STATE_MASK.count_ones();
@@ -253,7 +249,7 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) unsafe fn drop_slice_reader_unchecked(&self) {
+    pub(crate) unsafe fn drop_slice_reader_unchecked(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             let counter = loaded >> Self::STATE_MASK.count_ones();
@@ -281,13 +277,13 @@ impl InnerSliceRwLock {
         }
     }
 
-    pub(super) unsafe fn drop_slice_writer_unchecked(&self) {
+    pub(crate) unsafe fn drop_slice_writer_unchecked(&self) {
         self.0.store(Self::EMPTY, Ordering::Release);
         atomic_wait::wake_all(&self.0);
     }
 }
 
-pub(super) struct LockState(AtomicU32);
+pub(crate) struct LockState(AtomicU32);
 
 impl LockState {
     const POISONED: u32 = 1;
@@ -300,138 +296,226 @@ impl LockState {
     }
 
     #[inline]
-    pub(super) fn is_poisoned(&self) -> bool {
+    pub(crate) fn is_poisoned(&self) -> bool {
         self.0.load(Ordering::Relaxed) & Self::POISONED != 0
     }
 
     #[inline]
-    pub(super) fn clear_poison(&self) {
+    pub(crate) fn clear_poison(&self) {
         self.0.fetch_and(!Self::POISONED, Ordering::Relaxed);
     }
 
     #[inline]
-    pub(super) fn poison(&self) {
+    pub(crate) fn poison(&self) {
         self.0.fetch_or(Self::POISONED, Ordering::Relaxed);
     }
 
     #[inline]
-    pub(super) fn get_counter(&self) -> u32 {
+    pub(crate) fn get_counter(&self) -> u32 {
         self.0.load(Ordering::Relaxed) >> Self::POISONED.count_ones()
     }
 
-    pub(super) unsafe fn fetch_increment_counter_unchecked(&self, order: Ordering) -> u32 {
+    pub(crate) unsafe fn fetch_increment_counter_unchecked(&self, order: Ordering) -> u32 {
         self.0.fetch_add(Self::COUNTER_ONE, order) >> Self::POISONED.count_ones()
     }
 
     #[inline]
-    pub(super) unsafe fn fetch_decrement_counter_unchecked(&self, order: Ordering) -> u32 {
+    pub(crate) unsafe fn fetch_decrement_counter_unchecked(&self, order: Ordering) -> u32 {
         self.0.fetch_sub(Self::COUNTER_ONE, order) >> Self::POISONED.count_ones()
     }
 }
 
-pub(super) struct AllocatedMetadata {
-    pub(super) lock: InnerSliceRwLock,
-    pub(super) state: LockState,
+pub(crate) struct Metadata {
+    pub(crate) lock: InnerSliceRwLock,
+    pub(crate) state: LockState,
 }
 
-#[repr(C)]
-pub(super) struct Allocation<T> {
-    pub(super) metadata: AllocatedMetadata,
-    pub(super) slice: [T],
+impl Metadata {
+    pub(crate) fn new() -> Self {
+        Self {
+            lock: InnerSliceRwLock::new(),
+            state: LockState::new(),
+        }
+    }
 }
 
-impl<T> Allocation<T> {
-    const fn get_layout(len: usize) -> Result<Layout, LayoutError> {
-        match Layout::new::<AllocatedMetadata>().extend(
-            match Layout::array::<T>(len) {
-                Ok(array_layout) => array_layout,
-                Err(err) => return Err(err),
+pub(crate) mod alloc {
+    use crate::inner::{InnerSliceRwLock, LockState, Metadata};
+    use std::{
+        alloc::{AllocError, Allocator, Global, Layout, LayoutError, handle_alloc_error},
+        mem::MaybeUninit,
+        ptr::{self, NonNull},
+    };
+
+    #[repr(C)]
+    pub(crate) struct Allocation<T, A: Allocator = Global> {
+        allocator: A,
+        pub(crate) metadata: Metadata,
+        pub(crate) slice: [T],
+    }
+
+    impl<T, A: Allocator> Allocation<T, A> {
+        /// Returns the layout that describes an `Allocation<T, A>`
+        const fn get_layout(len: usize) -> Result<Layout, LayoutError> {
+            match Layout::new::<A>().extend(
+                match Layout::new::<Metadata>().extend(
+                    match Layout::array::<T>(len) {
+                        Ok(array_layout) => array_layout,
+                        Err(err) => return Err(err),
+                    }
+                    .pad_to_align(),
+                ) {
+                    Ok((layout, _)) => layout,
+                    Err(err) => return Err(err),
+                },
+            ) {
+                Ok((layout, _)) => Ok(layout),
+                Err(err) => Err(err),
             }
-            .pad_to_align(),
-        ) {
-            Ok((layout, _)) => Ok(layout),
-            Err(err) => Err(err),
+        }
+
+        /// Deallocates the memory referenced by `ptr`.
+        /// 
+        /// # Safety
+        /// See `alloc::Allocator::deallocate`
+        pub(crate) unsafe fn deallocate(ptr: NonNull<Self>) {
+            unsafe {
+                let layout = Layout::for_value(&*ptr.as_ptr());
+                let allocator = (&raw mut (*ptr.as_ptr()).allocator).read();
+                (&raw mut (*ptr.as_ptr()).metadata).drop_in_place();
+                (&raw mut (*ptr.as_ptr()).slice).drop_in_place();
+                allocator.deallocate(ptr.cast(), layout);
+            }
+        }
+
+        /// Returns a reference to the metadata of the `Allocation` referenced by `ptr`
+        /// without constructing a reference to the whole object.
+        /// 
+        /// # Safety
+        /// `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        #[inline]
+        pub(crate) const unsafe fn get_metadata_disjoint<'a>(ptr: NonNull<Self>) -> &'a Metadata {
+            unsafe { &(*ptr.as_ptr()).metadata }
+        }
+
+        /// Returns a mutable reference to the whole slice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        /// 
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        #[inline]
+        pub(crate) const unsafe fn get_slice_mut_disjoint<'a>(ptr: NonNull<Self>) -> &'a mut [T] {
+            unsafe { &mut (*ptr.as_ptr()).slice }
+        }
+
+        /// Returns a mutable reference to an element of the slice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        /// 
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        #[inline]
+        pub(crate) const unsafe fn get_elem_mut_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a mut T {
+            unsafe { &mut *(&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
+        }
+
+        /// Returns a mutable reference to a subslice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        /// 
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        pub(crate) const unsafe fn get_subslice_mut_disjoint<'a>(
+            ptr: NonNull<Self>,
+            start: usize,
+            len: usize,
+        ) -> &'a mut [T] {
+            unsafe { &mut *ptr::from_raw_parts_mut((&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(start), len) }
         }
     }
 
-    pub(super) unsafe fn realloc(ptr: NonNull<[T]>) -> NonNull<Self> {
-        let len = ptr::metadata(ptr.as_ptr());
-        let layout = Self::get_layout(len).unwrap();
-        let new = NonNull::<Self>::from_raw_parts(NonNull::new(unsafe { alloc::alloc(layout) }).unwrap_or_else(|| alloc::handle_alloc_error(layout)), len);
-        unsafe {
-            // Copy original data into newly allocated memory and deallocate it
-            (&raw mut (*new.as_ptr()).slice).cast::<T>().copy_from_nonoverlapping(ptr.as_ptr().cast::<T>(), len);
-            alloc::dealloc(ptr.as_ptr().cast(), Layout::array::<T>(len).unwrap());
-
-            // Initialize metadata
-            (&raw mut (*new.as_ptr()).metadata).write(AllocatedMetadata {
-                lock: InnerSliceRwLock::new(),
-                state: LockState::new(),
-            });
-        }
-        new
-
-    }
-
-    pub(super) unsafe fn dealloc(ptr: NonNull<Self>) {
-        unsafe {
-            ptr.drop_in_place();
-            alloc::dealloc(
-                ptr.as_ptr().cast(),
-                Self::get_layout(ptr::metadata(ptr.as_ptr())).unwrap(),
+    impl<T, A: Allocator> Allocation<MaybeUninit<T>, A> {
+        /// Allocates an instance of an `Allocation` with uninitialized contents in the provided allocator
+        pub(crate) fn allocate_uninit_in(len: usize, allocator: A) -> NonNull<Self> {
+            let layout = Self::get_layout(len).unwrap();
+            let ptr = NonNull::<Self>::from_raw_parts(
+                allocator
+                    .allocate(layout)
+                    .unwrap_or_else(|_| handle_alloc_error(layout))
+                    .cast::<()>(),
+                len,
             );
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            unsafe {
+                (&raw mut (*ptr.as_ptr()).allocator).write(allocator);
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
+                    lock: InnerSliceRwLock::new(),
+                    state: LockState::new(),
+                });
+            }
+            ptr
         }
-    }
 
-    #[inline]
-    pub(super) const unsafe fn get_metadata_disjoint<'a>(ptr: NonNull<Self>) -> &'a AllocatedMetadata {
-        unsafe { &(*ptr.as_ptr()).metadata }
-    }
-
-    #[inline]
-    pub(super) const unsafe fn get_slice_mut_disjoint<'a>(ptr: NonNull<Self>) -> &'a mut [T] {
-        unsafe { &mut (*ptr.as_ptr()).slice }
-    }
-
-    #[inline]
-    pub(super) const unsafe fn get_elem_mut_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a mut T {
-        unsafe { &mut *(&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
-    }
-
-    pub(super) const unsafe fn get_subslice_mut_disjoint<'a>(ptr: NonNull<Self>, start: usize, len: usize) -> &'a mut [T] {
-        unsafe { &mut *ptr::from_raw_parts_mut((&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(start), len) }
-    }
-}
-
-impl<T> Allocation<MaybeUninit<T>> {
-    pub(super) unsafe fn alloc_uninit(len: usize) -> NonNull<Self> {
-        let layout = Self::get_layout(len).unwrap();
-        let ptr = NonNull::<Self>::from_raw_parts(
-            NonNull::new(unsafe { alloc::alloc(layout) }).unwrap_or_else(|| alloc::handle_alloc_error(layout)),
-            len,
-        );
-        unsafe {
-            // Initialize metadata
-            (&raw mut (*ptr.as_ptr()).metadata).write(AllocatedMetadata {
-                lock: InnerSliceRwLock::new(),
-                state: LockState::new(),
-            });
+        /// Allocates an instance of an `Allocation` with uninitialized contents in the provided allocator,
+        /// returning an error if the allocation fails
+        pub(crate) fn try_allocate_uninit_in(len: usize, allocator: A) -> Result<NonNull<Self>, AllocError> {
+            let layout = match Self::get_layout(len) {
+                Ok(layout) => layout,
+                Err(_) => return Err(AllocError),
+            };
+            let ptr = NonNull::<Self>::from_raw_parts(allocator.allocate(layout)?.cast::<()>(), len);
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            unsafe {
+                (&raw mut (*ptr.as_ptr()).allocator).write(allocator);
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
+                    lock: InnerSliceRwLock::new(),
+                    state: LockState::new(),
+                });
+            }
+            Ok(ptr)
         }
-        ptr
-    }
 
-    pub(super) unsafe fn alloc_zeroed(len: usize) -> NonNull<Self> {
-        let layout = Self::get_layout(len).unwrap();
-        let ptr = NonNull::<Self>::from_raw_parts(
-            NonNull::new(unsafe { alloc::alloc_zeroed(layout) }).unwrap_or_else(|| alloc::handle_alloc_error(layout)),
-            len,
-        );
-        unsafe {
-            (&raw mut (*ptr.as_ptr()).metadata).write(AllocatedMetadata {
-                lock: InnerSliceRwLock::new(),
-                state: LockState::new(),
-            });
+        /// Allocates an instance of an `Allocation` with uninitialized contents,
+        /// with the `slice` field being filled with `0` bytes in the provided allocator
+        pub(crate) fn allocate_zeroed_in(len: usize, allocator: A) -> NonNull<Self> {
+            let layout = Self::get_layout(len).unwrap();
+            let ptr = NonNull::<Self>::from_raw_parts(
+                allocator
+                    .allocate_zeroed(layout)
+                    .unwrap_or_else(|_| handle_alloc_error(layout))
+                    .cast::<()>(),
+                len,
+            );
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            unsafe {
+                (&raw mut (*ptr.as_ptr()).allocator).write(allocator);
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
+                    lock: InnerSliceRwLock::new(),
+                    state: LockState::new(),
+                });
+            }
+            ptr
         }
-        ptr
+
+        /// Allocates an instance of an `Allocation` with uninitialized contents,
+        /// with the `slice` field being filled with `0` bytes in the provided allocator,
+        /// returning an error if allocation fails
+        pub(crate) fn try_allocate_zeroed_in(len: usize, allocator: A) -> Result<NonNull<Self>, AllocError> {
+            let layout = match Self::get_layout(len) {
+                Ok(layout) => layout,
+                Err(_) => return Err(AllocError),
+            };
+            let ptr = NonNull::<Self>::from_raw_parts(allocator.allocate_zeroed(layout)?.cast::<()>(), len);
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            unsafe {
+                (&raw mut (*ptr.as_ptr()).allocator).write(allocator);
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
+                    lock: InnerSliceRwLock::new(),
+                    state: LockState::new(),
+                });
+            }
+            Ok(ptr)
+        }
     }
 }
