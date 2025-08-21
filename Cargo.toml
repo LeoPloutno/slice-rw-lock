@@ -8,3 +8,5 @@ atomic-wait = "1.1"
 
 [features]
 allocator_api = []
+mapped_guards = []
+downgrade = []

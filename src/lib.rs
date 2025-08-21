@@ -1,25 +1,22 @@
-#![feature(ptr_metadata, vec_into_raw_parts)]
-//#![allow(dead_code)]
-
-#[cold]
-#[inline(always)]
-fn unlikely(val: bool) -> bool {
-    val
-}
+#![feature(ptr_metadata, allocator_api)]
+#![allow(dead_code)]
 
 mod inner;
 
+mod elem;
+
 mod elem_rw_lock;
-mod chunk_rw_lock;
 
 #[rustfmt::skip]
-pub use crate::elem_rw_lock::{
-    iter::Iter as Iter, 
-    lock::RwLock as ElemRwLock, 
-    read_slice::RwLockReadSliceGuard as ElemRwLockReadSliceGuard, 
-    write::RwLockWriteGuard as ElemRwLockWriteGuard,
-    write_slice::RwLockWriteSliceGuard as ElemRwLockWriteSliceGuard,
+pub use crate::elem::{
+    lock::ElemRwLock, 
+    write::ElemRwLockWriteGuard,
+    read_all::ElemRwLockReadAllGuard,
+    write_all::ElemRwLockWriteAllGuard,
 };
+
+#[cfg(feature = "mapped_guards")]
+pub use crate::elem::write::mapped::MappedElemRwLockWriteGuard;
 
 #[cfg(test)]
 mod tests {}
