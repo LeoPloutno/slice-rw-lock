@@ -406,7 +406,7 @@ impl Metadata {
 pub(crate) mod alloc {
     use crate::inner::{InnerRwLock, LockState, Metadata};
     use std::{
-        alloc::{AllocError, Allocator, Global, Layout, LayoutError, handle_alloc_error},
+        alloc::{AllocError, Allocator, Layout, LayoutError, handle_alloc_error},
         mem::{MaybeUninit, needs_drop},
         ptr::{self, NonNull},
     };
@@ -457,6 +457,17 @@ pub(crate) mod alloc {
             unsafe { &(*ptr.as_ptr()).metadata }
         }
 
+        /// Returns a reference to the whole slice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        ///
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        #[inline]
+        pub(crate) const unsafe fn get_all_disjoint<'a>(ptr: NonNull<Self>) -> &'a [T] {
+            unsafe { &(*ptr.as_ptr()).slice }
+        }
+
         /// Returns a mutable reference to the whole slice of the `Allocation` referenced by `ptr`
         /// without constructing a (mutable) reference to the whole object
         ///
@@ -468,6 +479,17 @@ pub(crate) mod alloc {
             unsafe { &mut (*ptr.as_ptr()).slice }
         }
 
+        /// Returns a reference to an element of the slice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        ///
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        #[inline]
+        pub(crate) const unsafe fn get_elem_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a T {
+            unsafe { &*(&raw const (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
+        }
+
         /// Returns a mutable reference to an element of the slice of the `Allocation` referenced by `ptr`
         /// without constructing a (mutable) reference to the whole object
         ///
@@ -477,6 +499,16 @@ pub(crate) mod alloc {
         #[inline]
         pub(crate) const unsafe fn get_elem_mut_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a mut T {
             unsafe { &mut *(&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
+        }
+
+        /// Returns a reference to a subslice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        ///
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        pub(crate) const unsafe fn get_subslice_disjoint<'a>(ptr: NonNull<Self>, start: usize, len: usize) -> &'a [T] {
+            unsafe { &*ptr::from_raw_parts((&raw const (*ptr.as_ptr()).slice).cast::<T>().add(start), len) }
         }
 
         /// Returns a mutable reference to a subslice of the `Allocation` referenced by `ptr`
