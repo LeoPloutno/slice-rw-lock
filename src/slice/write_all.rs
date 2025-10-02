@@ -1,4 +1,4 @@
-use super::lock::InnerElemRwLock;
+use super::lock::InnerSliceRwLock;
 use crate::inner::alloc::Allocation;
 use std::{
     fmt::{self, Debug},
@@ -7,23 +7,23 @@ use std::{
     thread,
 };
 
-/// RAII structure used to release the exclusive global write access of an 'ElemRwLock' when
+/// RAII structure used to release the exclusive global write access of an 'SliceRwLock' when
 /// dropped.
 ///
 /// This structure is created by the [`write_all`] and [`try_write_all`] methods on
-/// [`ElemRwLock`].
+/// [`SliceRwLock`].
 ///
-/// [`ElemRwLock`]: super::lock::ElemRwLock
-/// [`write_all`]: super::lock::ElemRwLock::write
-/// [`try_write_all`]: super::lock::ElemRwLock::try_write
-#[must_use = "if unused the ElemRwLock will immediately unlock"]
+/// [`SliceRwLock`]: super::lock::SliceRwLock
+/// [`write_all`]: super::lock::SliceRwLock::write
+/// [`try_write_all`]: super::lock::SliceRwLock::try_write
+#[must_use = "if unused the SliceRwLock will immediately unlock"]
 #[clippy::has_significant_drop]
-pub struct ElemRwLockWriteAllGuard<'a, T>(
-    pub(super) &'a mut InnerElemRwLock<T>,
+pub struct SliceRwLockWriteAllGuard<'a, T>(
+    pub(super) &'a mut InnerSliceRwLock<T>,
     /* For opting-out of `Send` */ pub(super) PhantomData<*const ()>,
 );
 
-impl<T> Deref for ElemRwLockWriteAllGuard<'_, T> {
+impl<T> Deref for SliceRwLockWriteAllGuard<'_, T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -33,7 +33,7 @@ impl<T> Deref for ElemRwLockWriteAllGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for ElemRwLockWriteAllGuard<'_, T> {
+impl<T> DerefMut for SliceRwLockWriteAllGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: The allocation is valid and alive.
         // Aliasing rules are protected by synchronization
@@ -41,7 +41,7 @@ impl<T> DerefMut for ElemRwLockWriteAllGuard<'_, T> {
     }
 }
 
-impl<T> Drop for ElemRwLockWriteAllGuard<'_, T> {
+impl<T> Drop for SliceRwLockWriteAllGuard<'_, T> {
     fn drop(&mut self) {
         // SAFETY: `self.0.allocation` is not deallocated until the last lock is dropped
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.0.allocation) };
@@ -56,13 +56,13 @@ impl<T> Drop for ElemRwLockWriteAllGuard<'_, T> {
     }
 }
 
-impl<T: Debug> Debug for ElemRwLockWriteAllGuard<'_, T> {
+impl<T: Debug> Debug for SliceRwLockWriteAllGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
 
-unsafe impl<T: Sync> Sync for ElemRwLockWriteAllGuard<'_, T> {}
+unsafe impl<T: Sync> Sync for SliceRwLockWriteAllGuard<'_, T> {}
 
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
@@ -74,24 +74,24 @@ pub(crate) mod mapped {
         thread,
     };
 
-    use super::ElemRwLockWriteAllGuard;
+    use super::SliceRwLockWriteAllGuard;
     use crate::inner::{Metadata, alloc::Allocation};
 
-    impl<'a, T> ElemRwLockWriteAllGuard<'a, T> {
-        /// Makes a [`MappedElemRwLockWriteAllGuard`] for a component of the borrowed data, e.g.
+    impl<'a, T> SliceRwLockWriteAllGuard<'a, T> {
+        /// Makes a [`MappedSliceRwLockWriteAllGuard`] for a component of the borrowed data, e.g.
         /// an enum variant.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `SliceRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `ElemRwLockWriteAllGuard::map(...)`. A method would interfere with methods of
-        /// the same name on the contents of the `ElemRwLockWriteAllGuard` used through
+        /// `SliceRwLockWriteAllGuard::map(...)`. A method would interfere with methods of
+        /// the same name on the contents of the `SliceRwLockWriteAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn map<U, F>(orig: Self, f: F) -> MappedElemRwLockWriteAllGuard<'a, U>
+        /// If the closure panics, the guard will be dropped (unlocked) and the SliceRwLock will be poisoned.
+        pub fn map<U, F>(orig: Self, f: F) -> MappedSliceRwLockWriteAllGuard<'a, U>
         where
             F: FnOnce(&mut [T]) -> &mut U,
             U: ?Sized,
@@ -102,27 +102,27 @@ pub(crate) mod mapped {
             // not exceeding the lifetime of the lock which keeps it alive.
             // Aliasing rules are upheld thanks to synchronization
             // and `orig` not holding a (mutable) reference to the slice
-            MappedElemRwLockWriteAllGuard {
+            MappedSliceRwLockWriteAllGuard {
                 lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
                 data: NonNull::from_mut(f(unsafe { Allocation::get_all_mut_disjoint(orig.0.allocation) })),
             }
         }
 
-        /// Makes a [`MappedElemRwLockWriteAllGuard`] for a component of the borrowed data. The
+        /// Makes a [`MappedSliceRwLockWriteAllGuard`] for a component of the borrowed data. The
         /// original guard is returned as an `Err(...)` if the closure returns
         /// `None`.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `SliceRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `ElemRwLockWriteAllGuard::filter_map(...)`. A method would interfere with methods
-        /// of the same name on the contents of the `ElemRwLockWriteAllGuard` used through
+        /// `SliceRwLockWriteAllGuard::filter_map(...)`. A method would interfere with methods
+        /// of the same name on the contents of the `SliceRwLockWriteAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedElemRwLockWriteAllGuard<'a, U>, Self>
+        /// If the closure panics, the guard will be dropped (unlocked) and the SliceRwLock will be poisoned.
+        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedSliceRwLockWriteAllGuard<'a, U>, Self>
         where
             F: FnOnce(&mut [T]) -> Option<&mut U>,
             U: ?Sized,
@@ -135,7 +135,7 @@ pub(crate) mod mapped {
             match f(unsafe { Allocation::get_all_mut_disjoint(orig.0.allocation) }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
-                    Ok(MappedElemRwLockWriteAllGuard {
+                    Ok(MappedSliceRwLockWriteAllGuard {
                         lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
                         data: NonNull::from_mut(data),
                     })
@@ -149,32 +149,32 @@ pub(crate) mod mapped {
     /// dropped, which can point to a subfield of the protected data.
     ///
     /// This structure is created by the [`map`] and [`filter_map`] methods
-    /// on [`ElemRwLockWriteAllGuard`].
+    /// on [`SliceRwLockWriteAllGuard`].
     ///
-    /// [`map`]: super::ElemRwLockWriteAllGuard::map
-    /// [`filter_map`]: super::ElemRwLockWriteAllGuard::filter_map
-    #[must_use = "if unused the ElemRwLock will immediately unlock"]
+    /// [`map`]: super::SliceRwLockWriteAllGuard::map
+    /// [`filter_map`]: super::SliceRwLockWriteAllGuard::filter_map
+    #[must_use = "if unused the SliceRwLock will immediately unlock"]
     #[clippy::has_significant_drop]
-    pub struct MappedElemRwLockWriteAllGuard<'a, T: ?Sized + 'a> {
+    pub struct MappedSliceRwLockWriteAllGuard<'a, T: ?Sized + 'a> {
         lock: &'a Metadata,
         data: NonNull<T>,
     }
 
-    impl<'a, T: ?Sized + 'a> MappedElemRwLockWriteAllGuard<'a, T> {
-        /// Makes a [`MappedElemRwLockWriteAllGuard`] for a component of the borrowed data, e.g.
+    impl<'a, T: ?Sized + 'a> MappedSliceRwLockWriteAllGuard<'a, T> {
+        /// Makes a [`MappedSliceRwLockWriteAllGuard`] for a component of the borrowed data, e.g.
         /// an enum variant.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `SliceRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `MappedElemRwLockWriteAllGuard::map(...)`. A method would interfere with methods of
-        /// the same name on the contents of the `MappedElemRwLockWriteAllGuard` used through
+        /// `MappedSliceRwLockWriteAllGuard::map(...)`. A method would interfere with methods of
+        /// the same name on the contents of the `MappedSliceRwLockWriteAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn map<U, F>(mut orig: Self, f: F) -> MappedElemRwLockWriteAllGuard<'a, U>
+        /// If the closure panics, the guard will be dropped (unlocked) and the SliceRwLock will be poisoned.
+        pub fn map<U, F>(mut orig: Self, f: F) -> MappedSliceRwLockWriteAllGuard<'a, U>
         where
             F: FnOnce(&mut T) -> &mut U,
             U: ?Sized,
@@ -183,24 +183,24 @@ pub(crate) mod mapped {
             let orig = ManuallyDrop::new(orig);
             // SAFETY: No other pointer to the object can access it due to the
             // synchronization provided by the lock
-            MappedElemRwLockWriteAllGuard { lock: orig.lock, data }
+            MappedSliceRwLockWriteAllGuard { lock: orig.lock, data }
         }
 
-        /// Makes a [`MappedElemRwLockWriteAllGuard`] for a component of the borrowed data. The
+        /// Makes a [`MappedSliceRwLockWriteAllGuard`] for a component of the borrowed data. The
         /// original guard is returned as an `Err(...)` if the closure returns
         /// `None`.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `SliceRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `MappedElemRwLockWriteAllGuard::filter_map(...)`. A method would interfere with methods
-        /// of the same name on the contents of the `MappedElemRwLockWriteAllGuard` used through
+        /// `MappedSliceRwLockWriteAllGuard::filter_map(...)`. A method would interfere with methods
+        /// of the same name on the contents of the `MappedSliceRwLockWriteAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedElemRwLockWriteAllGuard<'a, U>, Self>
+        /// If the closure panics, the guard will be dropped (unlocked) and the SliceRwLock will be poisoned.
+        pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedSliceRwLockWriteAllGuard<'a, U>, Self>
         where
             F: FnOnce(&mut T) -> Option<&mut U>,
             U: ?Sized,
@@ -210,7 +210,7 @@ pub(crate) mod mapped {
             match f(unsafe { orig.data.as_mut() }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
-                    Ok(MappedElemRwLockWriteAllGuard {
+                    Ok(MappedSliceRwLockWriteAllGuard {
                         lock: orig.lock,
                         data: NonNull::from_mut(data),
                     })
@@ -220,7 +220,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized> Deref for MappedElemRwLockWriteAllGuard<'a, T> {
+    impl<'a, T: ?Sized> Deref for MappedSliceRwLockWriteAllGuard<'a, T> {
         type Target = T;
 
         fn deref(&self) -> &Self::Target {
@@ -230,7 +230,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized + 'a> DerefMut for MappedElemRwLockWriteAllGuard<'a, T> {
+    impl<'a, T: ?Sized + 'a> DerefMut for MappedSliceRwLockWriteAllGuard<'a, T> {
         fn deref_mut(&mut self) -> &mut Self::Target {
             // SAFETY: The only way to obtain a pointer to this pointee is to transform the only
             // guard protecting it via `map` or `filter_map`, which transfers ownership one-to-one
@@ -238,7 +238,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized + 'a> Drop for MappedElemRwLockWriteAllGuard<'a, T> {
+    impl<'a, T: ?Sized + 'a> Drop for MappedSliceRwLockWriteAllGuard<'a, T> {
         fn drop(&mut self) {
             // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
             if thread::panicking() {
@@ -252,35 +252,35 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: Debug + ?Sized + 'a> Debug for MappedElemRwLockWriteAllGuard<'a, T> {
+    impl<'a, T: Debug + ?Sized + 'a> Debug for MappedSliceRwLockWriteAllGuard<'a, T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             (**self).fmt(f)
         }
     }
 
-    impl<'a, T: Display + ?Sized + 'a> Display for MappedElemRwLockWriteAllGuard<'a, T> {
+    impl<'a, T: Display + ?Sized + 'a> Display for MappedSliceRwLockWriteAllGuard<'a, T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             (**self).fmt(f)
         }
     }
 
-    unsafe impl<'a, T: Sync + ?Sized + 'a> Sync for MappedElemRwLockWriteAllGuard<'a, T> {}
+    unsafe impl<'a, T: Sync + ?Sized + 'a> Sync for MappedSliceRwLockWriteAllGuard<'a, T> {}
 }
 
 #[cfg(feature = "downgrade")]
-impl<'a, T> ElemRwLockWriteAllGuard<'a, T> {
-    /// Downgrades a global-write-locked `ElemRwLockWriteAllGuard` into a global-read-locked [`ElemRwLockReadAllGuard`].
+impl<'a, T> SliceRwLockWriteAllGuard<'a, T> {
+    /// Downgrades a global-write-locked `SliceRwLockWriteAllGuard` into a global-read-locked [`SliceRwLockReadAllGuard`].
     ///
     /// This method will atomically change the state of the lock from exclusive global mode into
     /// shared global mode. This means that it is impossible for a writing thread to get in between a
     /// thread calling `downgrade` and the same thread reading whatever it wrote while it had the
     /// lock in write mode.
     ///
-    /// Note that since we have the `ElemRwLockWriteAllGuard`, we know that the lock is already
+    /// Note that since we have the `SliceRwLockWriteAllGuard`, we know that the lock is already
     /// locked for writing, so this method cannot fail.
     ///
-    /// [`ElemRwLockReadAllGuard`]: super::read_all::ElemRwLockReadAllGuard
-    pub fn downgrade(s: Self) -> super::read_all::ElemRwLockReadAllGuard<'a, T> {
+    /// [`SliceRwLockReadAllGuard`]: super::read_all::SliceRwLockReadAllGuard
+    pub fn downgrade(s: Self) -> super::read_all::SliceRwLockReadAllGuard<'a, T> {
         // SAFETY: `s.0.allocation` is not deallocated until the last lock is dropped
         // SAFETY: The counter is guaranteed to be at least `1` because
         // when constructing `s` it has been incremented
@@ -295,21 +295,21 @@ impl<'a, T> ElemRwLockWriteAllGuard<'a, T> {
             // SAFETY: The only reference to the pointee has already been forgotten
             unsafe { &*ptr }
         };
-        super::read_all::ElemRwLockReadAllGuard(lock, PhantomData)
+        super::read_all::SliceRwLockReadAllGuard(lock, PhantomData)
     }
 
-    /// Downgrades a global-write-locked `ElemRwLockWriteAllGuard` into a subfield-write-locked [`ElemRwLockWriteGuard`].
+    /// Downgrades a global-write-locked `SliceRwLockWriteAllGuard` into a subfield-write-locked [`SliceRwLockWriteGuard`].
     ///
     /// This method will atomically change the state of the lock from exclusive global mode into
     /// exclusive subfield mode. This means that it is impossible for a writing thread to get in between a
     /// thread calling `downgrade` and the same thread reading whatever it wrote while it had the
     /// lock in write mode.
     ///
-    /// Note that since we have the `ElemRwLockWriteAllGuard`, we know that the lock is already
+    /// Note that since we have the `SliceRwLockWriteAllGuard`, we know that the lock is already
     /// locked for writing, so this method cannot fail.
     ///
-    /// [`ElemRwlockWriteGuard`]: super::write::ElemRwLockWriteGuard
-    pub fn downgrade_write(s: Self) -> super::write::ElemRwLockWriteGuard<'a, T> {
+    /// [`SliceRwlockWriteGuard`]: super::write::SliceRwLockWriteGuard
+    pub fn downgrade_write(s: Self) -> super::write::SliceRwLockWriteGuard<'a, T> {
         // SAFETY: `s.0.allocation` is not deallocated until the last lock is dropped
         // SAFETY: The counter is guaranteed to be at least `1` because
         // when constructing `s` it has been incremented
@@ -324,6 +324,6 @@ impl<'a, T> ElemRwLockWriteAllGuard<'a, T> {
             // SAFETY: The only reference to the pointee has already been forgotten
             unsafe { &mut *ptr }
         };
-        super::write::ElemRwLockWriteGuard(lock, PhantomData)
+        super::write::SliceRwLockWriteGuard(lock, PhantomData)
     }
 }

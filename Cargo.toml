@@ -10,3 +10,4 @@ atomic-wait = "1.1"
 allocator_api = []
 mapped_guards = []
 downgrade = []
+slice_as_array = []

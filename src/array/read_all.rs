@@ -1,4 +1,4 @@
-use super::lock::InnerElemRwLock;
+use super::lock::InnerArrayRwLock;
 use crate::inner::alloc::Allocation;
 use std::{
     fmt::{self, Debug},
@@ -10,19 +10,19 @@ use std::{
 /// dropped.
 ///
 /// This structure is created by the [`read_all`] and [`try_read_all`] methods on
-/// [`ElemRwLock`].
+/// [`ArrayRwLock`].
 ///
-/// [`ElemRwLock`]: super::lock::ElemRwLock
-/// [`read_all`]: super::lock::ElemRwLock::read_all
-/// [`try_read_all`]: super::lock::ElemRwLock::try_read_all
-#[must_use = "if unused the ElemRwLock will immediately unlock"]
+/// [`ArrayRwLock`]: super::lock::ArrayRwLock
+/// [`read_all`]: super::lock::ArrayRwLock::read_all
+/// [`try_read_all`]: super::lock::ArrayRwLock::try_read_all
+#[must_use = "if unused the ArrayRwLock will immediately unlock"]
 #[clippy::has_significant_drop]
-pub struct ElemRwLockReadAllGuard<'a, T>(
-    pub(super) &'a InnerElemRwLock<T>,
+pub struct ArrayRwLockReadAllGuard<'a, T, const N: usize>(
+    pub(super) &'a InnerArrayRwLock<T>,
     /* For opting-out of `Send` */ pub(super) PhantomData<*const ()>,
 );
 
-impl<T> Deref for ElemRwLockReadAllGuard<'_, T> {
+impl<T, const N: usize> Deref for ArrayRwLockReadAllGuard<'_, T, N> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -32,7 +32,7 @@ impl<T> Deref for ElemRwLockReadAllGuard<'_, T> {
     }
 }
 
-impl<T> Drop for ElemRwLockReadAllGuard<'_, T> {
+impl<T, const N: usize> Drop for ArrayRwLockReadAllGuard<'_, T, N> {
     fn drop(&mut self) {
         // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.0.allocation) };
@@ -44,13 +44,13 @@ impl<T> Drop for ElemRwLockReadAllGuard<'_, T> {
     }
 }
 
-impl<T: Debug> Debug for ElemRwLockReadAllGuard<'_, T> {
+impl<T: Debug, const N: usize> Debug for ArrayRwLockReadAllGuard<'_, T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
 
-unsafe impl<T: Sync> Sync for ElemRwLockReadAllGuard<'_, T> {}
+unsafe impl<T: Sync, const N: usize> Sync for ArrayRwLockReadAllGuard<'_, T, N> {}
 
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
@@ -61,24 +61,24 @@ pub(crate) mod mapped {
         ptr::NonNull,
     };
 
-    use super::ElemRwLockReadAllGuard;
+    use super::ArrayRwLockReadAllGuard;
     use crate::inner::{Metadata, alloc::Allocation};
 
-    impl<'a, T> ElemRwLockReadAllGuard<'a, T> {
-        /// Makes a [`MappedElemRwLockReadAllGuard`] for a component of the borrowed data, e.g.
+    impl<'a, T, const N: usize> ArrayRwLockReadAllGuard<'a, T, N> {
+        /// Makes a [`MappedArrayRwLockReadAllGuard`] for a component of the borrowed data, e.g.
         /// an enum variant.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ArrayRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `ElemRwLockReadAllGuard::map(...)`. A method would interfere with methods of
-        /// the same name on the contents of the `ElemRwLockReadAllGuard` used through
+        /// `ArrayRwLockReadAllGuard::map(...)`. A method would interfere with methods of
+        /// the same name on the contents of the `ArrayRwLockReadAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will not be poisoned.
-        pub fn map<U, F>(orig: Self, f: F) -> MappedElemRwLockReadAllGuard<'a, U>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ArrayRwLock will not be poisoned.
+        pub fn map<U, F>(orig: Self, f: F) -> MappedArrayRwLockReadAllGuard<'a, U>
         where
             F: FnOnce(&[T]) -> &U,
             U: ?Sized,
@@ -88,28 +88,28 @@ pub(crate) mod mapped {
             // `orig.0.allocation` exceeds `'a` by the virtue of the latter
             // not exceeding the lifetime of the lock which keeps it alive.
             // Aliasing rules are upheld thanks to synchronization
-            // and `orig` not holding a (mutable) reference to the allocation
-            MappedElemRwLockReadAllGuard {
+            // and `orig` not holding a (mutable) reference to the chunk
+            MappedArrayRwLockReadAllGuard {
                 lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
                 data: NonNull::from_ref(f(unsafe { Allocation::get_all_disjoint(orig.0.allocation) })),
             }
         }
 
-        /// Makes a [`MappedElemRwLockReadAllGuard`] for a component of the borrowed data. The
+        /// Makes a [`MappedArrayRwLockReadAllGuard`] for a component of the borrowed data. The
         /// original guard is returned as an `Err(...)` if the closure returns
         /// `None`.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ArrayRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `ElemRwLockReadAllGuard::filter_map(...)`. A method would interfere with methods
-        /// of the same name on the contents of the `ElemRwLockReadAllGuard` used through
+        /// `ArrayRwLockReadAllGuard::filter_map(...)`. A method would interfere with methods
+        /// of the same name on the contents of the `ArrayRwLockReadAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will not be poisoned.
-        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedElemRwLockReadAllGuard<'a, U>, Self>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ArrayRwLock will not be poisoned.
+        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedArrayRwLockReadAllGuard<'a, U>, Self>
         where
             F: FnOnce(&[T]) -> Option<&U>,
             U: ?Sized,
@@ -118,11 +118,11 @@ pub(crate) mod mapped {
             // `orig.0.allocation` exceeds `'a` by the virtue of the latter
             // not exceeding the lifetime of the lock which keeps it alive.
             // Aliasing rules are upheld thanks to synchronization
-            // and `orig` not holding a (mutable) reference to the allocation
+            // and `orig` not holding a (mutable) reference to the chunk
             match f(unsafe { Allocation::get_all_disjoint(orig.0.allocation) }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
-                    Ok(MappedElemRwLockReadAllGuard {
+                    Ok(MappedArrayRwLockReadAllGuard {
                         lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
                         data: NonNull::from_ref(data),
                     })
@@ -136,32 +136,32 @@ pub(crate) mod mapped {
     /// dropped, which can point to a subfield of the protected data.
     ///
     /// This structure is created by the [`map`] and [`filter_map`] methods
-    /// on [`ElemRwLockReadAllGuard`].
+    /// on [`ArrayRwLockReadAllGuard`].
     ///
-    /// [`map`]: super::ElemRwLockReadAllGuard::map
-    /// [`filter_map`]: super::ElemRwLockReadAllGuard::filter_map
-    #[must_use = "if unused the ElemRwLock will immediately unlock"]
+    /// [`map`]: super::ArrayRwLockReadAllGuard::map
+    /// [`filter_map`]: super::ArrayRwLockReadAllGuard::filter_map
+    #[must_use = "if unused the ArrayRwLock will immediately unlock"]
     #[clippy::has_significant_drop]
-    pub struct MappedElemRwLockReadAllGuard<'a, T: ?Sized + 'a> {
+    pub struct MappedArrayRwLockReadAllGuard<'a, T: ?Sized + 'a> {
         lock: &'a Metadata,
         data: NonNull<T>,
     }
 
-    impl<'a, T: ?Sized + 'a> MappedElemRwLockReadAllGuard<'a, T> {
-        /// Makes a [`MappedElemRwLockReadAllGuard`] for a component of the borrowed data, e.g.
+    impl<'a, T: ?Sized + 'a> MappedArrayRwLockReadAllGuard<'a, T> {
+        /// Makes a [`MappedArrayRwLockReadAllGuard`] for a component of the borrowed data, e.g.
         /// an enum variant.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ArrayRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `MappedElemRwLockReadAllGuard::map(...)`. A method would interfere with methods of
-        /// the same name on the contents of the `MappedElemRwLockReadAllGuard` used through
+        /// `MappedArrayRwLockReadAllGuard::map(...)`. A method would interfere with methods of
+        /// the same name on the contents of the `MappedArrayRwLockReadAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will not be poisoned.
-        pub fn map<U, F>(orig: Self, f: F) -> MappedElemRwLockReadAllGuard<'a, U>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ArrayRwLock will not be poisoned.
+        pub fn map<U, F>(orig: Self, f: F) -> MappedArrayRwLockReadAllGuard<'a, U>
         where
             F: FnOnce(&T) -> &U,
             U: ?Sized,
@@ -170,24 +170,24 @@ pub(crate) mod mapped {
             let orig = ManuallyDrop::new(orig);
             // SAFETY: No other pointer to the object can access it due to the
             // synchronization provided by the lock
-            MappedElemRwLockReadAllGuard { lock: orig.lock, data }
+            MappedArrayRwLockReadAllGuard { lock: orig.lock, data }
         }
 
-        /// Makes a [`MappedElemRwLockReadAllGuard`] for a component of the borrowed data. The
+        /// Makes a [`MappedArrayRwLockReadAllGuard`] for a component of the borrowed data. The
         /// original guard is returned as an `Err(...)` if the closure returns
         /// `None`.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ArrayRwLock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `MappedElemRwLockReadAllGuard::filter_map(...)`. A method would interfere with methods
-        /// of the same name on the contents of the `MappedElemRwLockReadAllGuard` used through
+        /// `MappedArrayRwLockReadAllGuard::filter_map(...)`. A method would interfere with methods
+        /// of the same name on the contents of the `MappedArrayRwLockReadAllGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will not be poisoned.
-        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedElemRwLockReadAllGuard<'a, U>, Self>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ArrayRwLock will not be poisoned.
+        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedArrayRwLockReadAllGuard<'a, U>, Self>
         where
             F: FnOnce(&T) -> Option<&U>,
             U: ?Sized,
@@ -197,7 +197,7 @@ pub(crate) mod mapped {
             match f(unsafe { orig.data.as_ref() }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
-                    Ok(MappedElemRwLockReadAllGuard {
+                    Ok(MappedArrayRwLockReadAllGuard {
                         lock: orig.lock,
                         data: NonNull::from_ref(data),
                     })
@@ -207,7 +207,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized> Deref for MappedElemRwLockReadAllGuard<'a, T> {
+    impl<'a, T: ?Sized> Deref for MappedArrayRwLockReadAllGuard<'a, T> {
         type Target = T;
 
         fn deref(&self) -> &Self::Target {
@@ -217,7 +217,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized + 'a> Drop for MappedElemRwLockReadAllGuard<'a, T> {
+    impl<'a, T: ?Sized + 'a> Drop for MappedArrayRwLockReadAllGuard<'a, T> {
         fn drop(&mut self) {
             // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
             unsafe {
@@ -228,17 +228,17 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: Debug + ?Sized + 'a> Debug for MappedElemRwLockReadAllGuard<'a, T> {
+    impl<'a, T: Debug + ?Sized + 'a> Debug for MappedArrayRwLockReadAllGuard<'a, T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             (**self).fmt(f)
         }
     }
 
-    impl<'a, T: Display + ?Sized + 'a> Display for MappedElemRwLockReadAllGuard<'a, T> {
+    impl<'a, T: Display + ?Sized + 'a> Display for MappedArrayRwLockReadAllGuard<'a, T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             (**self).fmt(f)
         }
     }
 
-    unsafe impl<'a, T: Sync + ?Sized + 'a> Sync for MappedElemRwLockReadAllGuard<'a, T> {}
+    unsafe impl<'a, T: Sync + ?Sized + 'a> Sync for MappedArrayRwLockReadAllGuard<'a, T> {}
 }

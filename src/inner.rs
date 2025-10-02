@@ -524,6 +524,32 @@ pub(crate) mod alloc {
         ) -> &'a mut [T] {
             unsafe { &mut *ptr::from_raw_parts_mut((&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(start), len) }
         }
+
+        /// Returns a reference to a chunk of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        ///
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        pub(crate) const unsafe fn get_chunk_disjoint<'a, const N: usize>(
+            ptr: NonNull<Self>,
+            start: usize,
+        ) -> &'a [T; N] {
+            unsafe { &*(&raw const (*ptr.as_ptr()).slice).cast::<T>().add(start).cast() }
+        }
+
+        /// Returns a mutable reference to a chunk of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object
+        ///
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        pub(crate) const unsafe fn get_chunk_mut_disjoint<'a, const N: usize>(
+            ptr: NonNull<Self>,
+            start: usize,
+        ) -> &'a mut [T; N] {
+            unsafe { &mut *(&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(start).cast() }
+        }
     }
 
     impl<T> Allocation<MaybeUninit<T>> {
