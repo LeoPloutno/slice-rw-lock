@@ -5,28 +5,45 @@ use crate::{
     array::lock::InnerArrayRwLock, inner::{alloc::Allocation, LockState}, slice::{chunks::Chunks, chunks_exact::ChunksExact, rchunks::RChunks, rchunks_exact::RChunksExact}, ArrayRwLock, ElemRwLock
 };
 use std::{
-    alloc::{Allocator, Global}, fmt::{self, Debug, Formatter}, marker::PhantomData, mem::{self, ManuallyDrop, MaybeUninit}, num::NonZeroUsize, ops::OneSidedRange, option, panic::{RefUnwindSafe, UnwindSafe}, process, ptr::NonNull, sync::{
+    alloc::{Allocator, Global}, fmt::{self, Debug, Formatter}, marker::PhantomData, mem::{self, ManuallyDrop, MaybeUninit}, num::NonZeroUsize, option, panic::{RefUnwindSafe, UnwindSafe}, process, ptr::NonNull, sync::{
         atomic::{self, Ordering}, LockResult, PoisonError, TryLockError, TryLockResult
     }
 };
 
-pub(crate) struct InnerSliceRwLock<T> {
-    pub(crate) start: usize,
-    pub(crate) len: usize,
-    pub(crate) allocation: NonNull<Allocation<T>>,
+pub struct InnerSliceRwLock<T> {
+    start: usize,
+    len: usize,
+    allocation: NonNull<Allocation<T>>,
 }
 
 #[clippy::has_significant_drop]
 pub struct SliceRwLock<T, A: Allocator = Global> {
-    pub(crate) inner: InnerSliceRwLock<T>,
-    pub(crate) allocator: A,
+    inner: InnerSliceRwLock<T>,
+    allocator: A,
 }
 
 impl<T, A: Allocator> SliceRwLock<T, A> {
+    /// Creates a new lock to the underlying `allocation` without incrementing the reference counter.
+    /// 
+    /// # Safety
+    /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
+    /// * `start` must index an element inside the array pointed to by `allocation`.
+    /// * `start + len` must either index an element of said array or point one element past its end.
+    /// * The reference counter must not be zero when this function is called.
+    #[inline]
+    pub(crate) unsafe fn new_not_incremented(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
+        Self {
+            allocator,
+            inner: InnerSliceRwLock { start, len, allocation },
+        }
+    }
+
     /// Creates a new lock to the underlying `allocation`. Atomically increments the reference counter.
     ///
     /// # Safety
-    /// `allocation` must point to a live and valid instance of `Allocation<T>`
+    /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
+    /// * `start` must index an element inside the array pointed to by `allocation`.
+    /// * `start + len` must either index an element of said array or point one element past its end.
     pub(crate) unsafe fn new(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         if unsafe {
             Allocation::get_metadata_disjoint(allocation)
@@ -36,11 +53,11 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
         {
             process::abort();
         }
-        Self {
-            allocator,
-            inner: InnerSliceRwLock { start, len, allocation },
-        }
+        // SAFETY: User-upheld invariant.
+        unsafe { Self::new_not_incremented(start, len, allocation, allocator) }
     }
+
+
 
     /// Locks the allocation guarded by this 'SliceRwLock' with shared global read access, blocking
     /// the current thread until it can be acquired.
@@ -580,19 +597,10 @@ impl<T, A: Allocator> SliceRwLock<MaybeUninit<T>, A> {
 
 impl<T, A: Allocator> Drop for SliceRwLock<T, A> {
     fn drop(&mut self) {
-        // SAFETY: The counter is guaranteed to be at least `1` because
-        // when constructing `self` it has been incremented
-        if unsafe {
-            Allocation::get_metadata_disjoint(self.inner.allocation)
-                .state
-                .fetch_decrement_counter_unchecked(Ordering::Release)
-        } == 1
-        {
-            atomic::compiler_fence(Ordering::Acquire);
-            unsafe {
-                Allocation::deallocate_in(self.inner.allocation, &self.allocator);
-            }
-        }
+        // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
+        // The existance of `self` guarantees that the counter is at least 1.
+        // By construction, `allocation` points to valid and live data.
+        unsafe { Allocation::drop_in_unchecked(self.inner.allocation, &self.allocator); }
     }
 }
 

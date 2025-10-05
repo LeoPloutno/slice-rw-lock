@@ -4,11 +4,10 @@ use std::{
     num::NonZeroUsize,
     ops::Drop,
     ptr::NonNull,
-    sync::atomic::{self, Ordering},
 };
 
-use crate::{inner::alloc::Allocation, slice::lock::SliceRwLock};
-
+use crate::inner::{self, alloc::Allocation};
+use super::lock::SliceRwLock;
 
 /// An iterator over a `SliceRwLock` in locks to (non-overlapping) chunks (`chunk_size` elements at a
 /// time), starting at the end of the slice.
@@ -21,28 +20,43 @@ use crate::{inner::alloc::Allocation, slice::lock::SliceRwLock};
 /// [`rchunks`]: SliceRwLock::rchunks
 #[clippy::has_significant_drop]
 pub struct RChunks<T, A: Allocator> {
-    pub(crate) chunk_size: NonZeroUsize,
-    pub(crate) end: usize,
-    pub(crate) remainder: usize,
-    pub(crate) allocation: NonNull<Allocation<T>>,
-    pub(crate) allocator: A,
+    chunk_size: NonZeroUsize,
+    start: usize,
+    end: usize,
+    allocation: NonNull<Allocation<T>>,
+    allocator: A,
+}
+
+impl<T, A: Allocator> RChunks<T, A> {
+    /// Creates a new instance of `RChunks` without checking whether `start + len` overflows.
+    /// Does not increment the reference counter.
+    /// 
+    /// # Safety
+    /// See [`SliceRwLock::new`]
+    #[inline]
+    pub(crate) const fn new_unchecked(chunk_size: NonZeroUsize, start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
+        debug_assert!(start.checked_add(len).is_some());
+
+        Self {
+            chunk_size,
+            start,
+            // SAFETY: User-upheld invariant.
+            end: unsafe { start.unchecked_add(len) },
+            allocation,
+            allocator
+        }
+    }
 }
 
 impl<T, A: Allocator> Drop for RChunks<T, A> {
+    #[inline]
     fn drop(&mut self) {
-        // SAFETY: The counter is guaranteed to be at least `1` because
-        // when `self` was constructed, it was non-zero
-        if unsafe {
-            Allocation::get_metadata_disjoint(self.allocation)
-                .state
-                .fetch_decrement_counter_unchecked(Ordering::Release)
-        } == 1
-        {
-            atomic::compiler_fence(Ordering::Acquire);
-            unsafe {
-                Allocation::deallocate_in(self.allocation, &self.allocator);
-            }
-        }
+        debug_assert!(unsafe { Allocation::get_metadata_disjoint(self.allocation).state.get_counter() } > 0);
+
+        // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
+        // The existance of `self` guarantees that the counter is at least 1.
+        // By construction, `allocation` points to live and valid data.
+        unsafe { Allocation::drop_in_unchecked(self.allocation, &self.allocator); }
     }
 }
 
@@ -50,115 +64,114 @@ impl<T, A: Allocator + Clone> Iterator for RChunks<T, A> {
     type Item = SliceRwLock<T, A>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remainder >= self.chunk_size.get() {
+        debug_assert!(self.start <= self.end);
+
+        // SAFETY: By construction, `start <= end`.
+        let len = unsafe { self.end.unchecked_sub(self.start) };
+        if self.chunk_size.get() < len {
             unsafe {
-                // SAFETY: `self.end - self.remainder` is guaranteed to point within the allocation.
-                // Checked above that `self.remainder` is greater than or equal to `self.chunk_size`
+                // SAFETY: Checked above that `chunk_size < end - start`, which implies `start < end - chunk_size`.
                 self.end = self.end.unchecked_sub(self.chunk_size.get());
-                self.remainder = self.remainder.unchecked_sub(self.chunk_size.get());
-                // SAFETY: `self.allocation` points to a live and valid allocation by construction
-                Some(SliceRwLock::new(
-                    self.end,
-                    self.chunk_size.get(),
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                // SAFETY: All invariants are upheld by construction.
+                Some(SliceRwLock::new(self.end, self.chunk_size.get(), self.allocation, self.allocator.clone()))
             }
-        } else if self.remainder > 0 {
-            // SAFETY: `self.end - self.remainder` is guaranteed to point within the allocation
-            unsafe {
-                self.end = self.end.unchecked_sub(self.remainder);
-            }
-            let remainder = self.remainder;
-            self.remainder = 0;
-            // SAFETY: `self.allocation` points to a live and valid allocation by construction
-            Some(unsafe { SliceRwLock::new(self.end, remainder, self.allocation, self.allocator.clone()) })
+        } else if len > 0 {
+            inner::cold_path();
+            self.end = self.start;
+            // SAFETY: All invariants are upheld by construction.
+            unsafe { Some(SliceRwLock::new(self.start, len, self.allocation, self.allocator.clone())) }
         } else {
+            inner::cold_path();
             None
         }
     }
 
+    #[inline]
     fn count(self) -> usize {
         self.len()
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = self.len();
         (len, Some(len))
     }
 
+    #[inline]
     fn last(mut self) -> Option<Self::Item> {
         self.next_back()
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        let step = n * self.chunk_size.get();
-        if self.remainder >= step + self.chunk_size.get() {
-            // SAFETY: Checked above that this operation does not overflow
-            let leap = unsafe { step.unchecked_add(self.chunk_size.get()) };
-            unsafe {
-                // SAFETY: `self.end - self.remainder` is guaranteed to point within the allocation.
-                // Checked above that `self.remainder` is greater than `step + self.chunk_size`, which is also `leap`
-                self.end = self.end.unchecked_sub(leap);
-                self.remainder = self.remainder.unchecked_sub(leap);
-                // SAFETY: `self.allocation` points to a live and valid allocation by construction
-                Some(SliceRwLock::new(
-                    self.end,
-                    self.chunk_size.get(),
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
-            }
-        } else if self.remainder > step {
-            let remainder = self.remainder;
-            self.remainder = 0;
-            Some(unsafe {
-                // SAFETY: `self.allocation` points to a live and valid allocation by construction
-                SliceRwLock::new(
-                    // SAFETY: `self.end - self.remainder` is guaranteed to point within the allocation
-                    self.end.unchecked_sub(remainder),
-                    // SAFETY: Checked above that `self.remainder` is greater than `step`
-                    remainder.unchecked_sub(step),
-                    self.allocation,
-                    self.allocator.clone(),
-                )
-            })
-        } else {
-            self.remainder = 0;
-            None
+        debug_assert!(self.start <= self.end);
+        
+        // SAFETY: By construction, `start <= end`.
+        let len = unsafe { self.end.unchecked_sub(self.start) };
+
+        match self.chunk_size.get().checked_mul(n) {
+            Some(skip) if skip < len => {
+                // SAFETY: Checked above that `skip < len`.
+                let remainder = unsafe { len.unchecked_sub(skip) }; 
+                if self.chunk_size.get() < remainder {
+                    unsafe {
+                        // SAFETY: Checked above that `chunk_size < end - start - skip`, which implies `start < end - skip - chunk_size`.
+                        self.end = self.end.unchecked_sub(skip).unchecked_sub(self.chunk_size.get());
+                        // SAFETY: All invariants are upheld by construction.
+                        Some(SliceRwLock::new(self.end, self.chunk_size.get(), self.allocation, self.allocator.clone()))
+                    }
+                } else {
+                    self.end = self.start;
+                    // SAFETY: All invariants are upheld by construction.
+                    unsafe { Some(SliceRwLock::new(self.start, remainder, self.allocation, self.allocator.clone())) }
+                }
+            },
+            Some(_) => {
+                self.end = self.start;
+                None
+            },
+            _ => { inner::cold_path(); None }
         }
     }
 }
 
 impl<T, A: Allocator + Clone> DoubleEndedIterator for RChunks<T, A> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.remainder == 0 {
-            None
-        } else {
-            let tmp = self.remainder % self.chunk_size;
-            let chunk_size = if tmp == 0 { self.chunk_size.get() } else { tmp };
-            let remainder = self.remainder;
+        debug_assert!(self.start <= self.end);
+
+        // SAFETY: By construction, `start <= end`.
+        let len = unsafe { self.end.unchecked_sub(self.start) };
+        if self.chunk_size.get() < len {
+            let chunk = {
+                let tmp = len % self.chunk_size;
+                if inner::unlikely(tmp == 0) { self.chunk_size.get() } else { tmp }
+            };
+            let start_old = self.start;
             unsafe {
-                // SAFETY: `chunk_size` is guaranteed to be smaller than `self.remainder` by construction
-                self.remainder = self.remainder.unchecked_sub(chunk_size);
-                Some(
-                    // SAFETY: `self.allocation` points to a live and valid allocation by construction
-                    SliceRwLock::new(
-                        // SAFETY: `self.end - self.remainder` is guaranteed to point within the allocation
-                        self.end.unchecked_sub(remainder),
-                        chunk_size,
-                        self.allocation,
-                        self.allocator.clone(),
-                    ),
-                )
+                // SAFETY: Checked above that `chunk_size < end - start`, which implies
+                // `start + len % chunk_size <= start + chunk_size < end`.
+                self.start = self.start.unchecked_add(chunk);
+                // SAFETY: All invariants are upheld by construction.
+                Some(SliceRwLock::new(start_old, chunk, self.allocation, self.allocator.clone()))
             }
+        } else if len > 0 {
+            inner::cold_path();
+            let start_old = self.start;
+            self.start = self.end;
+            // SAFETY: All invariants are upheld by construction.
+            unsafe { Some(SliceRwLock::new(start_old, len, self.allocation, self.allocator.clone())) }
+        } else {
+            inner::cold_path();
+            None
         }
     }
 }
 
 impl<T, A: Allocator + Clone> ExactSizeIterator for RChunks<T, A> {
+    #[inline]
     fn len(&self) -> usize {
-        self.remainder / self.chunk_size + if self.remainder % self.chunk_size == 0 { 0 } else { 1 }
+        // SAFETY: By construction, `start < end`.
+        let len = unsafe { self.end.unchecked_sub(self.start) };
+        len / self.chunk_size + if len % self.chunk_size == 0 { 0 } else { 1 }
     }
 }
 

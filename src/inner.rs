@@ -5,9 +5,14 @@ use std::{
 
 #[cold]
 #[inline(always)]
-fn unlikely(val: bool) -> bool {
+pub(crate) fn unlikely(val: bool) -> bool {
     val
 }
+
+#[cold]
+#[inline(always)]
+pub(crate) fn cold_path() {}
+
 
 pub(crate) struct InnerRwLock(AtomicU32);
 
@@ -382,7 +387,7 @@ impl LockState {
     /// Decrements the locks counter and returns the previous value, assuming overflow cannot occur.
     ///
     /// # Safety
-    /// The counter must not overflow
+    /// The counter must not underflow
     #[inline]
     pub(crate) unsafe fn fetch_decrement_counter_unchecked(&self, order: Ordering) -> u32 {
         self.0.fetch_sub(Self::COUNTER_ONE, order) >> Self::POISONED.count_ones()
@@ -409,6 +414,7 @@ pub(crate) mod alloc {
         alloc::{AllocError, Allocator, Layout, LayoutError, handle_alloc_error},
         mem::{MaybeUninit, needs_drop},
         ptr::{self, NonNull},
+        sync::atomic::{self, Ordering},
     };
 
     #[repr(C)]
@@ -419,7 +425,7 @@ pub(crate) mod alloc {
 
     impl<T> Allocation<T> {
         /// Returns the layout that describes an `Allocation<T, A>`
-        const fn get_layout(len: usize) -> Result<Layout, LayoutError> {
+        fn get_layout(len: usize) -> Result<Layout, LayoutError> {
             match Layout::new::<Metadata>().extend(
                 match Layout::array::<T>(len) {
                     Ok(array_layout) => array_layout,
@@ -435,7 +441,7 @@ pub(crate) mod alloc {
         /// Deallocates the memory referenced by `ptr` in the provided allocator.
         ///
         /// # Safety
-        /// See `alloc::Allocator::deallocate`
+        /// See [`std::alloc::Allocator::deallocate`]
         pub(crate) unsafe fn deallocate_in<A: Allocator>(ptr: NonNull<Self>, allocator: &A) {
             unsafe {
                 let layout = Layout::for_value(&*ptr.as_ptr());
@@ -444,6 +450,25 @@ pub(crate) mod alloc {
                     (&raw mut (*ptr.as_ptr()).slice).drop_in_place();
                 }
                 allocator.deallocate(ptr.cast(), layout);
+            }
+        }
+
+        /// Decrements the reference counter and deallolcates the pointee if the counter becomes nil
+        /// without checking whether the counter is non-zero before the decrement.
+        /// 
+        /// # Safety
+        /// See [`LockState::fetch_decrement_counter_unchecked`] and [`Allocation::deallocate_in`]
+        pub(crate) unsafe fn drop_in_unchecked<A: Allocator>(ptr: NonNull<Self>, allocator: &A) {
+            if unsafe {
+                Allocation::get_metadata_disjoint(ptr)
+                    .state
+                    .fetch_decrement_counter_unchecked(Ordering::Release)
+            } == 1
+            {
+                atomic::compiler_fence(Ordering::Acquire);
+                unsafe {
+                    Allocation::deallocate_in(ptr, allocator);
+                }
             }
         }
 

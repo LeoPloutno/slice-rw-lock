@@ -4,14 +4,12 @@ use std::{
     mem::ManuallyDrop,
     ops::Drop,
     ptr::NonNull,
-    sync::atomic::{self, Ordering},
 };
 
 use crate::{
-    ElemRwLock,
-    inner::alloc::Allocation,
-    slice::lock::{InnerSliceRwLock, SliceRwLock},
+    inner::{self, alloc::Allocation}, ElemRwLock
 };
+use super::lock::SliceRwLock;
 
 /// Element lock iterator.
 /// 
@@ -20,43 +18,59 @@ use crate::{
 /// [`iter`]: SliceRwLock::iter
 #[clippy::has_significant_drop]
 pub struct Iter<T, A: Allocator> {
-    pub(crate) start: usize,
-    pub(crate) len: usize,
-    pub(crate) allocation: NonNull<Allocation<T>>,
-    pub(crate) allocator: A,
+    start: usize,
+    end: usize,
+    allocation: NonNull<Allocation<T>>,
+    allocator: A,
 }
 
 impl<T, A: Allocator> Iter<T, A> {
+    /// Creates a new instance of `Iter` without checking whether `start + len` overflows.
+    /// Does not increment the reference counter.
+    /// 
+    /// # Safety
+    /// See [`SliceRwLock::new`]
+    #[inline]
+    pub(crate) const fn new_unchecked(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
+        debug_assert!(start.checked_add(len).is_some());
+
+        Self {
+            start,
+            // SAFETY: User-upheld invariant.
+            end: unsafe { start.unchecked_add(len) },
+            allocation,
+            allocator
+        }
+    }
+
     /// Converts into a guard to the underlying data.
     pub fn into_slice_rw_lock(self) -> SliceRwLock<T, A> {
+        debug_assert!(self.start <= self.end);
+
         let orig = ManuallyDrop::new(self);
-        SliceRwLock {
-            inner: InnerSliceRwLock {
-                start: orig.start,
-                len: orig.len,
-                allocation: orig.allocation,
-            },
-            // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function
-            allocator: unsafe { (&orig.allocator as *const A).read() },
+        unsafe { 
+            // SAFETY: All invariants are upheld by construction.
+            SliceRwLock::new_not_incremented(
+                orig.start, 
+                // SAFETY: By construction, `self.start <= self.end`.
+                orig.end.unchecked_sub(orig.start), 
+                orig.allocation, 
+                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                (&orig.allocator as *const A).read()
+            ) 
         }
     }
 }
 
 impl<T, A: Allocator> Drop for Iter<T, A> {
+    #[inline]
     fn drop(&mut self) {
-        // SAFETY: The counter is guaranteed to be at least `1` because
-        // when `self` was constructed, it was non-zero
-        if unsafe {
-            Allocation::get_metadata_disjoint(self.allocation)
-                .state
-                .fetch_decrement_counter_unchecked(Ordering::Release)
-        } == 1
-        {
-            atomic::compiler_fence(Ordering::Acquire);
-            unsafe {
-                Allocation::deallocate_in(self.allocation, &self.allocator);
-            }
-        }
+        debug_assert!(unsafe { Allocation::get_metadata_disjoint(self.allocation).state.get_counter() } > 0);
+
+        // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
+        // The existance of `self` guarantees that the counter is at least 1.
+        // By construction, `allocation` points to live and valid data.
+        unsafe { Allocation::drop_in_unchecked(self.allocation, &self.allocator); }
     }
 }
 
@@ -64,55 +78,47 @@ impl<T, A: Allocator + Clone> Iterator for Iter<T, A> {
     type Item = ElemRwLock<T, A>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.len > 0 {
-            let start = self.start;
+        if self.start < self.end {
+            let start_old = self.start;
             unsafe {
-                // SAFETY: `self.start + self.len` is guaranteed to point within or right outside the allocation
+                // SAFETY: Checked above that `start < end`.
                 self.start = self.start.unchecked_add(1);
-                // SAFETY: Checked above that `self.len` is greater than zero
-                self.len = self.len.unchecked_sub(1);
-                // SAFETY: `self.allocation` points to a live and valid allocation by construction
-                Some(ElemRwLock::new(start, self.allocation, self.allocator.clone()))
+                // SAFETY: All invariants are upheld by construction.
+                Some(ElemRwLock::new(start_old, self.allocation, self.allocator.clone()))
             }
         } else {
+            inner::cold_path();
             None
         }
     }
 
+    #[inline]
     fn count(self) -> usize {
-        self.len
+        self.len()
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
+        let len = self.len();
+        (len, Some(len))
     }
 
+    #[inline]
     fn last(mut self) -> Option<Self::Item> {
         self.next_back()
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        if self.len > n {
-            let start = self.start;
+        if n < self.len() {
+            let start_old = self.start;
             unsafe {
-                // SAFETY: `self.start + self.len` is guaranteed to point within or right outside the allocation.
-                // Checked above that `self.len` is greater than `n`
-                self.start = self.start.unchecked_add(n + 1);
-                // SAFETY: Checked above that `self.len` is greater than `n`
-                self.len = self.len.unchecked_sub(n + 1);
-                Some(
-                    // SAFETY: `self.allocation` points to a live and valid allocation by construction
-                    ElemRwLock::new(
-                        // SAFETY: `self.start + self.len` is guaranteed to point within or right outside the allocation.
-                        // Checked above that `self.len` is greater than `n`
-                        start.unchecked_add(n),
-                        self.allocation,
-                        self.allocator.clone(),
-                    ),
-                )
+                // SAFETY: Checked above that `n < end - start`, which implies `start + n < end`.
+                self.start = self.start.unchecked_add(n.unchecked_add(1));
+                // SAFETY: All invariants are upheld by construction.
+                Some(ElemRwLock::new(start_old, self.allocation, self.allocator.clone()))
             }
         } else {
-            self.len = 0;
+            self.start = self.end;
             None
         }
     }
@@ -120,29 +126,29 @@ impl<T, A: Allocator + Clone> Iterator for Iter<T, A> {
 
 impl<T, A: Allocator + Clone> DoubleEndedIterator for Iter<T, A> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.len > 0 {
+        debug_assert!(self.start <= self.end);
+
+        if self.start < self.end {
             unsafe {
-                // SAFETY: Checked above that `self.len` is greater than zero
-                self.len = self.len.unchecked_sub(1);
-                Some(
-                    // SAFETY: `self.allocation` points to a live and valid allocation by construction.
-                    ElemRwLock::new(
-                        // SAFETY: `self.start + self.len` is guaranteed to point within or right outside the allocation.
-                        self.start.unchecked_add(self.len),
-                        self.allocation,
-                        self.allocator.clone(),
-                    ),
-                )
+                // SAFETY: Checked above that `start < end`.
+                self.end = self.end.unchecked_sub(1);
+                // SAFETY: All invariants are upheld by construction.
+                Some(ElemRwLock::new(self.end, self.allocation, self.allocator.clone()))
             }
         } else {
+            inner::cold_path();
             None
         }
     }
 }
 
 impl<T, A: Allocator + Clone> ExactSizeIterator for Iter<T, A> {
+    #[inline]
     fn len(&self) -> usize {
-        self.len
+        debug_assert!(self.start <= self.end);
+
+        // SAFETY: By construction, `start <= end`.
+        unsafe { self.end.unchecked_sub(self.start) }
     }
 }
 
