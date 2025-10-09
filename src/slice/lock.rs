@@ -1,37 +1,51 @@
 use super::{
-    iter::Iter, read_all::SliceRwLockReadAllGuard, write::SliceRwLockWriteGuard, write_all::SliceRwLockWriteAllGuard,
+    chunks::Chunks, chunks_exact::ChunksExact, iter::Iter, rchunks::RChunks, rchunks_exact::RChunksExact,
+    read_all::SliceRwLockReadAllGuard, write::SliceRwLockWriteGuard, write_all::SliceRwLockWriteAllGuard,
 };
 use crate::{
-    array::lock::InnerArrayRwLock, inner::{alloc::Allocation, LockState}, slice::{chunks::Chunks, chunks_exact::ChunksExact, rchunks::RChunks, rchunks_exact::RChunksExact}, ArrayRwLock, ElemRwLock
+    array::lock::ArrayRwLock,
+    elem::lock::ElemRwLock,
+    inner::{LockState, alloc::Allocation},
 };
 use std::{
-    alloc::{Allocator, Global}, fmt::{self, Debug, Formatter}, marker::PhantomData, mem::{self, ManuallyDrop, MaybeUninit}, num::NonZeroUsize, option, panic::{RefUnwindSafe, UnwindSafe}, process, ptr::NonNull, sync::{
-        atomic::{self, Ordering}, LockResult, PoisonError, TryLockError, TryLockResult
-    }
+    alloc::{Allocator, Global},
+    fmt::{self, Debug, Formatter},
+    marker::PhantomData,
+    mem::{self, ManuallyDrop, MaybeUninit},
+    num::NonZeroUsize,
+    panic::{RefUnwindSafe, UnwindSafe},
+    process,
+    ptr::NonNull,
+    sync::{LockResult, PoisonError, TryLockError, TryLockResult, atomic::Ordering},
 };
 
-pub struct InnerSliceRwLock<T> {
-    start: usize,
-    len: usize,
-    allocation: NonNull<Allocation<T>>,
+pub(super) struct InnerSliceRwLock<T> {
+    pub(super) start: usize,
+    pub(super) len: usize,
+    pub(super) allocation: NonNull<Allocation<T>>,
 }
 
 #[clippy::has_significant_drop]
 pub struct SliceRwLock<T, A: Allocator = Global> {
-    inner: InnerSliceRwLock<T>,
+    pub(super) inner: InnerSliceRwLock<T>,
     allocator: A,
 }
 
 impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation` without incrementing the reference counter.
-    /// 
+    ///
     /// # Safety
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `start` must index an element inside the array pointed to by `allocation`.
     /// * `start + len` must either index an element of said array or point one element past its end.
     /// * The reference counter must not be zero when this function is called.
     #[inline]
-    pub(crate) unsafe fn new_not_incremented(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
+    pub(crate) unsafe fn new_not_incremented(
+        start: usize,
+        len: usize,
+        allocation: NonNull<Allocation<T>>,
+        allocator: A,
+    ) -> Self {
         Self {
             allocator,
             inner: InnerSliceRwLock { start, len, allocation },
@@ -53,11 +67,9 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
         {
             process::abort();
         }
-        // SAFETY: User-upheld invariant.
+        // SAFETY: User-upheld invariants.
         unsafe { Self::new_not_incremented(start, len, allocation, allocator) }
     }
-
-
 
     /// Locks the allocation guarded by this 'SliceRwLock' with shared global read access, blocking
     /// the current thread until it can be acquired.
@@ -79,7 +91,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// acquired. The acquired lock guard will be contained in the returned
     /// error.
     pub fn read_all(&self) -> LockResult<SliceRwLockReadAllGuard<'_, T>> {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         metadata.lock.read_all();
         let guard = SliceRwLockReadAllGuard(&self.inner, PhantomData);
@@ -115,7 +127,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
     pub fn try_read_all(&self) -> TryLockResult<SliceRwLockReadAllGuard<'_, T>> {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         if metadata.lock.try_read_all() {
             let guard = SliceRwLockReadAllGuard(&self.inner, PhantomData);
@@ -145,7 +157,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// lock. An error will be returned when the lock is acquired. The acquired
     /// lock guard will be contained in the returned error.
     pub fn write(&mut self) -> LockResult<SliceRwLockWriteGuard<'_, T>> {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         metadata.lock.write();
         let guard = SliceRwLockWriteGuard(&mut self.inner, PhantomData);
@@ -181,7 +193,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
     pub fn try_write(&mut self) -> TryLockResult<SliceRwLockWriteGuard<'_, T>> {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         if metadata.lock.try_write() {
             let guard = SliceRwLockWriteGuard(&mut self.inner, PhantomData);
@@ -210,7 +222,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// lock. An error will be returned when the lock is acquired. The acquired
     /// lock guard will be contained in the returned error.
     pub fn write_all(&mut self) -> LockResult<SliceRwLockWriteAllGuard<'_, T>> {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         metadata.lock.write_all();
         let guard = SliceRwLockWriteAllGuard(&mut self.inner, PhantomData);
@@ -246,7 +258,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
     pub fn try_write_all(&mut self) -> TryLockResult<SliceRwLockWriteAllGuard<'_, T>> {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         if metadata.lock.try_write_all() {
             let guard = SliceRwLockWriteAllGuard(&mut self.inner, PhantomData);
@@ -267,7 +279,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// without additional synchronization.
     #[inline]
     pub fn is_poisoned(&self) -> bool {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }
             .state
             .is_poisoned()
@@ -282,7 +294,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// so the poison is removed.
     #[inline]
     pub fn clear_poison(&self) {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+        // By construction, `allocation` points to live and valid data.
         unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }
             .state
             .clear_poison();
@@ -402,89 +414,93 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
 
     pub fn iter(self) -> Iter<T, A> {
         let orig = ManuallyDrop::new(self);
-        Iter { 
-            start: orig.inner.start, 
-            len: orig.inner.len, 
-            allocation: orig.inner.allocation, 
-            // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function
-            allocator: unsafe { (&orig.allocator as *const A).read() },
+        unsafe {
+            // SAFETY: All invariants are upheld by construction.
+            Iter::new_unchecked_not_increment(
+                orig.inner.start,
+                orig.inner.len,
+                orig.inner.allocation,
+                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                (&orig.allocator as *const A).read(),
+            )
         }
     }
 
     pub fn chunks(self, chunk_size: usize) -> Chunks<T, A> {
         assert!(chunk_size != 0, "chunk size must be non-zero");
+
         let orig = ManuallyDrop::new(self);
-        Chunks {
-            // SAFETY: Checked above that `chunk_size` is non-zero
-            chunk_size: unsafe { NonZeroUsize::new_unchecked(chunk_size) },
-            start: orig.inner.start,
-            remainder: orig.inner.len,
-            allocation: orig.inner.allocation,
-            // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function
-            allocator: unsafe { (&orig.allocator as *const A).read() },
+        unsafe {
+            // SAFETY: All invariants are upheld by construction.
+            Chunks::new_unchecked_not_increment(
+                // SAFETY: Checked above that `chunk_size` is non-zero.
+                NonZeroUsize::new_unchecked(chunk_size),
+                orig.inner.start,
+                orig.inner.len,
+                orig.inner.allocation,
+                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                (&orig.allocator as *const A).read(),
+            )
         }
     }
 
     pub fn chunks_exact(self, chunk_size: usize) -> ChunksExact<T, A> {
         assert!(chunk_size != 0, "chunk size must be non-zero");
-        // SAFETY: Checked above that `chunk_size` is non-zero
-        let chunk_size = unsafe { NonZeroUsize::new_unchecked(chunk_size) };
-        let remainder = self.inner.len % chunk_size;
+
         let orig = ManuallyDrop::new(self);
-        ChunksExact {
-            chunk_size,
-            start: orig.inner.start,
-            len: orig.inner.len / chunk_size,
-            remainder: super::chunks_exact::Chunk {
-                // SAFETY: `self.inner.start + self.inner.len` is guaranteed to point within or right outside the allocation.
-                // `remainder` is less than `self.inner.len` by construction
-                start: unsafe { orig.inner.start.unchecked_add(orig.inner.len).unchecked_sub(remainder) },
-                len: remainder
-            },
-            allocation: orig.inner.allocation,
-            // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function
-            allocator: unsafe { (&orig.allocator as *const A).read() },
+        unsafe {
+            // SAFETY: All invariants are upheld by construction.
+            ChunksExact::new_unchecked_not_increment(
+                // SAFETY: Checked above that `chunk_size` is non-zero.
+                NonZeroUsize::new_unchecked(chunk_size),
+                orig.inner.start,
+                orig.inner.len,
+                orig.inner.allocation,
+                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                (&orig.allocator as *const A).read(),
+            )
         }
     }
 
     pub fn rchunks(self, chunk_size: usize) -> RChunks<T, A> {
         assert!(chunk_size != 0, "chunk size must be non-zero");
+
         let orig = ManuallyDrop::new(self);
-        RChunks {
-            // SAFETY: Checked above that `chunk_size` is non-zero
-            chunk_size: unsafe { NonZeroUsize::new_unchecked(chunk_size) },
-            // SAFETY: `self.inner.start + self.inner.len` is guaranteed to point within or right outside the allocation
-            end: unsafe { orig.inner.start.unchecked_add(orig.inner.len) },
-            remainder: orig.inner.len,
-            allocation: orig.inner.allocation,
-            // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function
-            allocator: unsafe { (&orig.allocator as *const A).read() },
+        unsafe {
+            // SAFETY: All invariants are upheld by construction.
+            RChunks::new_unchecked_not_increment(
+                // SAFETY: Checked above that `chunk_size` is non-zero.
+                NonZeroUsize::new_unchecked(chunk_size),
+                orig.inner.start,
+                orig.inner.len,
+                orig.inner.allocation,
+                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                (&orig.allocator as *const A).read(),
+            )
         }
     }
 
     pub fn rchunks_exact(self, chunk_size: usize) -> RChunksExact<T, A> {
         assert!(chunk_size != 0, "chunk size must be non-zero");
-        // SAFETY: Checked above that `chunk_size` is non-zero
-        let chunk_size = unsafe { NonZeroUsize::new_unchecked(chunk_size) };
+
         let orig = ManuallyDrop::new(self);
-        RChunksExact {
-            chunk_size,
-            // SAFETY: `self.inner.start + self.inner.len` is guaranteed to point within or right outside the allocation
-            end: unsafe { orig.inner.start.unchecked_add(orig.inner.len) },
-            len: orig.inner.len / chunk_size,
-            remainder: super::rchunks_exact::Chunk {
-                start: orig.inner.start,
-                len: orig.inner.len % chunk_size
-            },
-            allocation: orig.inner.allocation,
-            // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function
-            allocator: unsafe { (&orig.allocator as *const A).read() },
+        unsafe {
+            // SAFETY: All invariants are upheld by construction.
+            RChunksExact::new_unchecked_not_increment(
+                // SAFETY: Checked above that `chunk_size` is non-zero.
+                NonZeroUsize::new_unchecked(chunk_size),
+                orig.inner.start,
+                orig.inner.len,
+                orig.inner.allocation,
+                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                (&orig.allocator as *const A).read(),
+            )
         }
     }
 
     pub fn chubk_by<F>(self, pred: F) -> ChunkBy<T, A, F>
-    where 
-        F: FnMut(&T, &T) -> bool
+    where
+        F: FnMut(&T, &T) -> bool,
     {
         todo!()
     }
@@ -497,37 +513,37 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
         todo!()
     }
 
-    pub fn split<F>(self, pref: F) -> Split<T, A, F> 
-    where 
-        F: FnMut(&T) -> bool
+    pub fn split<F>(self, pref: F) -> Split<T, A, F>
+    where
+        F: FnMut(&T) -> bool,
     {
         todo!()
     }
 
     pub fn split_inclusive<F>(self, pred: F) -> SplitInclusive<T, A, F>
-    where 
-        F: FnMut(&T) -> bool
+    where
+        F: FnMut(&T) -> bool,
     {
         todo!()
     }
 
     pub fn rsplit<F>(self, pred: F) -> RSplit<T, A, F>
-    where 
-        F: FnMut(&T) -> bool
+    where
+        F: FnMut(&T) -> bool,
     {
         todo!()
     }
 
     pub fn splitn<F>(self, pred: F) -> SplitN<T, A, F>
-    where 
-        F: FnMut(&T) -> bool
+    where
+        F: FnMut(&T) -> bool,
     {
         todo!()
     }
 
     pub fn rsplitn<F>(self, pred: F) -> RSplitN<T, A, F>
-    where 
-        F: FnMut(&T) -> bool
+    where
+        F: FnMut(&T) -> bool,
     {
         todo!()
     }
@@ -550,13 +566,14 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     pub fn into_array_rw_lock<const N: usize>(self) -> Result<ArrayRwLock<T, N, A>, Self> {
         if self.inner.len == N {
             let orig = ManuallyDrop::new(self);
-            Ok(ArrayRwLock {
-                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function
-                allocator: unsafe { (&orig.allocator as *const A).read() },
-                inner: InnerArrayRwLock {
-                    start: orig.inner.start,
-                    allocation: orig.inner.allocation,
-                },
+            Ok(unsafe {
+                // SAFETY: All invariants are upheld by construction.
+                ArrayRwLock::new_not_incremented(
+                    orig.inner.start,
+                    orig.inner.allocation,
+                    // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                    (&orig.allocator as *const A).read(),
+                )
             })
         } else {
             Err(self)
@@ -578,7 +595,7 @@ impl<T, A: Allocator> SliceRwLock<MaybeUninit<T>, A> {
     /// [`MaybeUninit::assume_init`]: mem::MaybeUninit::assume_init
     pub const unsafe fn assume_init(self) -> SliceRwLock<T, A> {
         // SAFETY: All fields of `self` are forgotten immediately after
-        // reading them out of the pointers
+        // reading them out of the pointers.
         let allocator = unsafe { (&raw const self.allocator).read() };
         let inner = unsafe { (&raw const self.inner).read() };
         mem::forget(self);
@@ -599,8 +616,10 @@ impl<T, A: Allocator> Drop for SliceRwLock<T, A> {
     fn drop(&mut self) {
         // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
         // The existance of `self` guarantees that the counter is at least 1.
-        // By construction, `allocation` points to valid and live data.
-        unsafe { Allocation::drop_in_unchecked(self.inner.allocation, &self.allocator); }
+        // By construction, `allocation` points to live and valid data.
+        unsafe {
+            Allocation::drop_in_unchecked(self.inner.allocation, &self.allocator);
+        }
     }
 }
 

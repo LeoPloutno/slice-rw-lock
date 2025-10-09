@@ -1,14 +1,6 @@
-use std::{
-    alloc::Allocator,
-    iter::FusedIterator,
-    mem::ManuallyDrop,
-    num::NonZeroUsize,
-    ops::Drop,
-    ptr::NonNull,
-};
-use crate::inner::{self, alloc::Allocation};
 use super::lock::SliceRwLock;
-
+use crate::inner::{self, alloc::Allocation};
+use std::{alloc::Allocator, iter::FusedIterator, mem::ManuallyDrop, num::NonZeroUsize, ops::Drop, ptr::NonNull};
 
 /// An iterator over a `SliceRwlock` in locks to (non-overlapping) chunks (`chunk_size` elements at a
 /// time), starting at the end of the slice.
@@ -18,7 +10,7 @@ use super::lock::SliceRwLock;
 /// the [`remainder`] function from the iterator.
 ///
 /// This struct is created by the [`rchunks_exact`] method on [`SliceRwLock`].
-/// 
+///
 /// [`remainder`]: RChunksExact::remainder
 /// [`rchunks_exact`]: SliceRwLock::rchunks_exact
 #[clippy::has_significant_drop]
@@ -35,11 +27,17 @@ pub struct RChunksExact<T, A: Allocator> {
 impl<T, A: Allocator> RChunksExact<T, A> {
     /// Creates a new instance of `RChunksExact` without checking whether `start + len` overflows.
     /// Does not increment the atomic counter.
-    /// 
+    ///
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) const fn new_unchecked(chunk_size: NonZeroUsize, start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
+    pub(crate) const unsafe fn new_unchecked_not_increment(
+        chunk_size: NonZeroUsize,
+        start: usize,
+        len: usize,
+        allocation: NonNull<Allocation<T>>,
+        allocator: A,
+    ) -> Self {
         // Shenanigans to bypass the `%` operator not being const.
         // SAFETY: `chunk_size` is non-zero.
         let remainder_len = unsafe { len.checked_rem(chunk_size.get()).unwrap_unchecked() };
@@ -53,7 +51,7 @@ impl<T, A: Allocator> RChunksExact<T, A> {
             // SAFETY: User-upheld invariant.
             end: unsafe { start.unchecked_add(len) },
             allocation,
-            allocator
+            allocator,
         }
     }
 
@@ -66,11 +64,11 @@ impl<T, A: Allocator> RChunksExact<T, A> {
         unsafe {
             // SAFETY: All invariants are upheld by construction.
             SliceRwLock::new_not_incremented(
-                orig.remainder_start, 
-                orig.remainder_len, 
-                orig.allocation, 
+                orig.remainder_start,
+                orig.remainder_len,
+                orig.allocation,
                 // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
-                (&orig.allocator as *const A).read()
+                (&raw const orig.allocator).read(),
             )
         }
     }
@@ -84,7 +82,9 @@ impl<T, A: Allocator> Drop for RChunksExact<T, A> {
         // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
         // The existance of `self` guarantees that the counter is at least 1.
         // By construction, `allocation` points to live and valid data.
-        unsafe { Allocation::drop_in_unchecked(self.allocation, &self.allocator); }
+        unsafe {
+            Allocation::drop_in_unchecked(self.allocation, &self.allocator);
+        }
     }
 }
 
@@ -101,7 +101,12 @@ impl<T, A: Allocator + Clone> Iterator for RChunksExact<T, A> {
                 // Checked above that `start < end`, so they must be at least `chunks_size` apart.
                 self.end = self.end.unchecked_sub(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(self.end, self.chunk_size.get(), self.allocation, self.allocator.clone()))
+                Some(SliceRwLock::new(
+                    self.end,
+                    self.chunk_size.get(),
+                    self.allocation,
+                    self.allocator.clone(),
+                ))
             }
         } else {
             inner::cold_path();
@@ -138,13 +143,21 @@ impl<T, A: Allocator + Clone> Iterator for RChunksExact<T, A> {
                 // of `chunk_size`, so `start` and `end - n * chunk_size` must be at least `chunk_size` apart.
                 self.end = self.end.unchecked_sub(skip).unchecked_sub(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(self.end, self.chunk_size.get(), self.allocation, self.allocator.clone()))
+                Some(SliceRwLock::new(
+                    self.end,
+                    self.chunk_size.get(),
+                    self.allocation,
+                    self.allocator.clone(),
+                ))
             },
             Some(_) => {
                 self.start = self.end;
                 None
-            },
-            _ => { inner::cold_path(); None }
+            }
+            _ => {
+                inner::cold_path();
+                None
+            }
         }
     }
 }
@@ -161,7 +174,12 @@ impl<T, A: Allocator + Clone> DoubleEndedIterator for RChunksExact<T, A> {
                 // Checked above that `start < end`, so they must be at least `chunks_size` apart.
                 self.start = self.start.unchecked_add(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(start_old, self.chunk_size.get(), self.allocation, self.allocator.clone()))
+                Some(SliceRwLock::new(
+                    start_old,
+                    self.chunk_size.get(),
+                    self.allocation,
+                    self.allocator.clone(),
+                ))
             }
         } else {
             inner::cold_path();

@@ -13,7 +13,6 @@ pub(crate) fn unlikely(val: bool) -> bool {
 #[inline(always)]
 pub(crate) fn cold_path() {}
 
-
 pub(crate) struct InnerRwLock(AtomicU32);
 
 impl InnerRwLock {
@@ -25,12 +24,12 @@ impl InnerRwLock {
     const ALL_WRITER: u32 = 1;
     pub(crate) const GUARDS_COUNT_MAX: u32 = u32::MAX >> Self::STATE_MASK.count_ones();
 
-    /// Constructs a new unlocked `InnerRwLock`
+    /// Constructs a new unlocked `InnerRwLock`.
     pub(crate) const fn new() -> Self {
         Self(AtomicU32::new(Self::EMPTY))
     }
 
-    /// Blocks until disjoint write access can be granted
+    /// Blocks until disjoint write access can be granted.
     pub(crate) fn write(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -54,7 +53,7 @@ impl InnerRwLock {
                 }
                 match self.0.compare_exchange_weak(
                     loaded,
-                    // SAFETY: Checked above that an overflow cannot occur
+                    // SAFETY: Checked above that an overflow cannot occur.
                     unsafe { loaded.unchecked_add(Self::COUNTER_ONE) },
                     Ordering::Acquire,
                     Ordering::Relaxed,
@@ -72,7 +71,7 @@ impl InnerRwLock {
         }
     }
 
-    /// Attempts to get disjoint write access without blocking. Returns whether the operation succeeded
+    /// Attempts to acquire disjoint write access without blocking. Returns whether the operation succeeded.
     pub(crate) fn try_write(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -96,7 +95,7 @@ impl InnerRwLock {
                 }
                 match self.0.compare_exchange_weak(
                     loaded,
-                    // SAFETY: Checked above that an overflow cannot occur
+                    // SAFETY: Checked above that an overflow cannot occur.
                     unsafe { loaded.unchecked_add(Self::COUNTER_ONE) },
                     Ordering::Acquire,
                     Ordering::Relaxed,
@@ -113,7 +112,7 @@ impl InnerRwLock {
         }
     }
 
-    /// Blocks until global read access can be granted
+    /// Blocks until global read access can be granted.
     pub(crate) fn read_all(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -137,7 +136,7 @@ impl InnerRwLock {
                 }
                 match self.0.compare_exchange_weak(
                     loaded,
-                    // SAFETY: Checked above that an overflow cannot occur
+                    // SAFETY: Checked above that an overflow cannot occur.
                     unsafe { loaded.unchecked_add(Self::COUNTER_ONE) },
                     Ordering::Acquire,
                     Ordering::Relaxed,
@@ -155,7 +154,7 @@ impl InnerRwLock {
         }
     }
 
-    /// Attempts to get global read access without blocking. Returns whether the operation succeeded
+    /// Attempts to acquire global read access without blocking. Returns whether the operation succeeded.
     pub(crate) fn try_read_all(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -179,7 +178,7 @@ impl InnerRwLock {
                 }
                 match self.0.compare_exchange_weak(
                     loaded,
-                    // SAFETY: Checked above that an overflow cannot occur
+                    // SAFETY: Checked above that an overflow cannot occur.
                     unsafe { loaded.unchecked_add(Self::COUNTER_ONE) },
                     Ordering::Acquire,
                     Ordering::Relaxed,
@@ -196,7 +195,7 @@ impl InnerRwLock {
         }
     }
 
-    /// Blocks until global write access can be granted
+    /// Blocks until global write access can be granted.
     pub(crate) fn write_all(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -218,7 +217,7 @@ impl InnerRwLock {
         }
     }
 
-    /// Attempts to get global write access without blocking. Returns whether the operation succeeded
+    /// Attempts to acquire global write access without blocking. Returns whether the operation succeeded.
     pub(crate) fn try_write_all(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -242,7 +241,7 @@ impl InnerRwLock {
     /// Decrements the disjoint writers counter, assuming it is not nil.
     ///
     /// # Safety
-    /// There must be at least one disjoint writer alive when this function is called
+    /// There must be at least one disjoint writer alive when this function is called.
     pub(crate) unsafe fn drop_writer_unchecked(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -250,12 +249,12 @@ impl InnerRwLock {
             match self.0.compare_exchange_weak(
                 loaded,
                 if counter == 0 {
-                    // SAFETY: User-upheld invariant
+                    // SAFETY: User-upheld invariant.
                     unsafe { hint::unreachable_unchecked() }
                 } else if counter == 1 {
                     Self::EMPTY
                 } else {
-                    // SAFETY: Checked above that overflow cannot occur, assuming the invariant holds
+                    // SAFETY: Checked above that overflow cannot occur, assuming the invariant holds.
                     unsafe { loaded.unchecked_sub(Self::COUNTER_ONE) }
                 },
                 Ordering::Release,
@@ -276,7 +275,7 @@ impl InnerRwLock {
     /// Decrements the global readers counter, assuming it is not nil.
     ///
     /// # Safety
-    /// There must be at least one global reader alive when this function is called
+    /// There must be at least one global reader alive when this function is called.
     pub(crate) unsafe fn drop_all_reader_unchecked(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -289,7 +288,7 @@ impl InnerRwLock {
                 } else if counter == 1 {
                     Self::EMPTY
                 } else {
-                    // SAFETY: Checked above that overflow cannot occur, assuming the invariant holds
+                    // SAFETY: Checked above that overflow cannot occur, assuming the invariant holds.
                     unsafe { loaded.unchecked_sub(Self::COUNTER_ONE) }
                 },
                 Ordering::Release,
@@ -310,7 +309,7 @@ impl InnerRwLock {
     /// Decrements the global writers counter, assuming it is not nil.
     ///
     /// # Safety
-    /// There must be a global writer alive when this function is called
+    /// There must be a global writer alive when this function is called.
     pub(crate) unsafe fn drop_all_writer_unchecked(&self) {
         self.0.store(Self::EMPTY, Ordering::Release);
         atomic_wait::wake_all(&self.0);
@@ -320,7 +319,7 @@ impl InnerRwLock {
     /// Changes the state of the lock from global write to global read, assuming it is in the former.
     ///
     /// # Safety
-    /// There must be a global writer alive when this function is called
+    /// There must be a global writer alive when this function is called.
     pub(crate) unsafe fn downgrade_unchecked(&self) {
         self.0
             .store(Self::ALL_READERS_STATE | Self::COUNTER_ONE, Ordering::Release);
@@ -331,7 +330,7 @@ impl InnerRwLock {
     /// Changes the state of the lock from global write to write, assuming it is in the former.
     ///
     /// # Safety
-    /// There must be a global writer alive when this function is called
+    /// There must be a global writer alive when this function is called.
     pub(crate) unsafe fn downgrade_write_unchecked(&self) {
         self.0.store(Self::WRITERS_STATE | Self::COUNTER_ONE, Ordering::Release);
         atomic_wait::wake_all(&self.0);
@@ -342,34 +341,34 @@ pub(crate) struct LockState(AtomicU32);
 
 impl LockState {
     const POISONED: u32 = 1;
-    const COUNTER_ONE: u32 = 1;
-    pub const MAX_COUNT: u32 = u32::MAX >> Self::POISONED.count_ones();
+    const COUNTER_ONE: u32 = 1 << Self::POISONED.count_ones();
+    pub(crate) const MAX_COUNT: u32 = u32::MAX >> Self::POISONED.count_ones();
 
-    /// Constructs a `LockState`, initialized to "not poisoned" and "no locks"
+    /// Constructs a `LockState`, initialized to "not poisoned" and "no locks".
     #[inline]
     const fn new() -> Self {
         Self(AtomicU32::new(0))
     }
 
-    /// Returns whether the lock is poisoned (`Relaxed` ordering)
+    /// Returns whether the lock is poisoned (`Relaxed` ordering).
     #[inline]
     pub(crate) fn is_poisoned(&self) -> bool {
         self.0.load(Ordering::Relaxed) & Self::POISONED != 0
     }
 
-    /// Clears poison from lock (`Relaxed` ordering)
+    /// Clears poison from lock (`Relaxed` ordering).
     #[inline]
     pub(crate) fn clear_poison(&self) {
         self.0.fetch_and(!Self::POISONED, Ordering::Relaxed);
     }
 
-    /// Poisons the lock (`Relaxed` ordering)
+    /// Poisons the lock (`Relaxed` ordering).
     #[inline]
     pub(crate) fn poison(&self) {
         self.0.fetch_or(Self::POISONED, Ordering::Relaxed);
     }
 
-    /// Returns the number of locks alive (`Relaxed` ordering)
+    /// Returns the number of locks alive (`Relaxed` ordering).
     #[inline]
     pub(crate) fn get_counter(&self) -> u32 {
         self.0.load(Ordering::Relaxed) >> Self::POISONED.count_ones()
@@ -378,7 +377,7 @@ impl LockState {
     /// Increments the locks counter and returns the previous value, assuming overflow cannot occur.
     ///
     /// # Safety
-    /// The counter must not overflow
+    /// The counter must not overflow.
     #[inline]
     pub(crate) unsafe fn fetch_increment_counter_unchecked(&self, order: Ordering) -> u32 {
         self.0.fetch_add(Self::COUNTER_ONE, order) >> Self::POISONED.count_ones()
@@ -387,7 +386,7 @@ impl LockState {
     /// Decrements the locks counter and returns the previous value, assuming overflow cannot occur.
     ///
     /// # Safety
-    /// The counter must not underflow
+    /// The counter must not underflow.
     #[inline]
     pub(crate) unsafe fn fetch_decrement_counter_unchecked(&self, order: Ordering) -> u32 {
         self.0.fetch_sub(Self::COUNTER_ONE, order) >> Self::POISONED.count_ones()
@@ -426,23 +425,18 @@ pub(crate) mod alloc {
     impl<T> Allocation<T> {
         /// Returns the layout that describes an `Allocation<T, A>`
         fn get_layout(len: usize) -> Result<Layout, LayoutError> {
-            match Layout::new::<Metadata>().extend(
-                match Layout::array::<T>(len) {
-                    Ok(array_layout) => array_layout,
-                    Err(err) => return Err(err),
-                }
-                .pad_to_align(),
-            ) {
-                Ok((layout, _)) => Ok(layout),
-                Err(err) => Err(err),
-            }
+            Layout::new::<Metadata>()
+                .pad_to_align()
+                .extend(Layout::array::<T>(len)?)
+                .map(|(layout, _)| layout)
         }
 
         /// Deallocates the memory referenced by `ptr` in the provided allocator.
         ///
         /// # Safety
-        /// See [`std::alloc::Allocator::deallocate`]
+        /// See [`std::alloc::Allocator::deallocate`].
         pub(crate) unsafe fn deallocate_in<A: Allocator>(ptr: NonNull<Self>, allocator: &A) {
+            // SAFETY: User-upheld invariants.
             unsafe {
                 let layout = Layout::for_value(&*ptr.as_ptr());
                 (&raw mut (*ptr.as_ptr()).metadata).drop_in_place();
@@ -455,7 +449,7 @@ pub(crate) mod alloc {
 
         /// Decrements the reference counter and deallolcates the pointee if the counter becomes nil
         /// without checking whether the counter is non-zero before the decrement.
-        /// 
+        ///
         /// # Safety
         /// See [`LockState::fetch_decrement_counter_unchecked`] and [`Allocation::deallocate_in`]
         pub(crate) unsafe fn drop_in_unchecked<A: Allocator>(ptr: NonNull<Self>, allocator: &A) {
@@ -476,109 +470,117 @@ pub(crate) mod alloc {
         /// without constructing a reference to the whole object.
         ///
         /// # Safety
-        /// `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
         #[inline]
         pub(crate) const unsafe fn get_metadata_disjoint<'a>(ptr: NonNull<Self>) -> &'a Metadata {
             unsafe { &(*ptr.as_ptr()).metadata }
         }
 
         /// Returns a reference to the whole slice of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
+        /// without constructing a (mutable) reference to the whole object.
         ///
         /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
         /// * The returned reference must not violate aliasing rules.
         #[inline]
-        pub(crate) const unsafe fn get_all_disjoint<'a>(ptr: NonNull<Self>) -> &'a [T] {
+        pub(crate) const unsafe fn get_slice_disjoint<'a>(ptr: NonNull<Self>) -> &'a [T] {
+            // SAFETY: User-upheld invariants.
             unsafe { &(*ptr.as_ptr()).slice }
         }
 
         /// Returns a mutable reference to the whole slice of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
+        /// without constructing a (mutable) reference to the whole object.
         ///
         /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
         /// * The returned reference must not violate aliasing rules.
         #[inline]
-        pub(crate) const unsafe fn get_all_mut_disjoint<'a>(ptr: NonNull<Self>) -> &'a mut [T] {
+        pub(crate) const unsafe fn get_slice_mut_disjoint<'a>(ptr: NonNull<Self>) -> &'a mut [T] {
+            // SAFETY: User-upheld invariants.
             unsafe { &mut (*ptr.as_ptr()).slice }
         }
 
-        /// Returns a reference to an element of the slice of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
-        ///
-        /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
-        /// * The returned reference must not violate aliasing rules.
-        #[inline]
-        pub(crate) const unsafe fn get_elem_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a T {
-            unsafe { &*(&raw const (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
-        }
-
-        /// Returns a mutable reference to an element of the slice of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
-        ///
-        /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
-        /// * The returned reference must not violate aliasing rules.
-        #[inline]
-        pub(crate) const unsafe fn get_elem_mut_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a mut T {
-            unsafe { &mut *(&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
-        }
-
         /// Returns a reference to a subslice of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
+        /// without constructing a (mutable) reference to the whole object.
         ///
         /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
         /// * The returned reference must not violate aliasing rules.
         pub(crate) const unsafe fn get_subslice_disjoint<'a>(ptr: NonNull<Self>, start: usize, len: usize) -> &'a [T] {
+            // SAFETY: User-upheld invariants.
             unsafe { &*ptr::from_raw_parts((&raw const (*ptr.as_ptr()).slice).cast::<T>().add(start), len) }
         }
 
         /// Returns a mutable reference to a subslice of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
+        /// without constructing a (mutable) reference to the whole object.
         ///
         /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
         /// * The returned reference must not violate aliasing rules.
         pub(crate) const unsafe fn get_subslice_mut_disjoint<'a>(
             ptr: NonNull<Self>,
             start: usize,
             len: usize,
         ) -> &'a mut [T] {
+            // SAFETY: User-upheld invariants.
             unsafe { &mut *ptr::from_raw_parts_mut((&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(start), len) }
         }
 
         /// Returns a reference to a chunk of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
+        /// without constructing a (mutable) reference to the whole object.
         ///
         /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
         /// * The returned reference must not violate aliasing rules.
-        pub(crate) const unsafe fn get_chunk_disjoint<'a, const N: usize>(
+        pub(crate) const unsafe fn get_array_disjoint<'a, const N: usize>(
             ptr: NonNull<Self>,
             start: usize,
         ) -> &'a [T; N] {
+            // SAFETY: User-upheld invariants.
             unsafe { &*(&raw const (*ptr.as_ptr()).slice).cast::<T>().add(start).cast() }
         }
 
         /// Returns a mutable reference to a chunk of the `Allocation` referenced by `ptr`
-        /// without constructing a (mutable) reference to the whole object
+        /// without constructing a (mutable) reference to the whole object.
         ///
         /// # Safety
-        /// * `ptr` must point to a valid instance of `Self` that outlives `'a`.
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
         /// * The returned reference must not violate aliasing rules.
-        pub(crate) const unsafe fn get_chunk_mut_disjoint<'a, const N: usize>(
+        pub(crate) const unsafe fn get_array_mut_disjoint<'a, const N: usize>(
             ptr: NonNull<Self>,
             start: usize,
         ) -> &'a mut [T; N] {
+            // SAFETY: User-upheld invariants.
             unsafe { &mut *(&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(start).cast() }
+        }
+
+        /// Returns a reference to an element of the slice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object.
+        ///
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        #[inline]
+        pub(crate) const unsafe fn get_elem_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a T {
+            // SAFETY: User-upheld invariants.
+            unsafe { &*(&raw const (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
+        }
+
+        /// Returns a mutable reference to an element of the slice of the `Allocation` referenced by `ptr`
+        /// without constructing a (mutable) reference to the whole object.
+        ///
+        /// # Safety
+        /// * `ptr` must point to a valid instance of `Allocation<T>` that outlives `'a`.
+        /// * The returned reference must not violate aliasing rules.
+        #[inline]
+        pub(crate) const unsafe fn get_elem_mut_disjoint<'a>(ptr: NonNull<Self>, idx: usize) -> &'a mut T {
+            // SAFETY: User-upheld invariants.
+            unsafe { &mut *(&raw mut (*ptr.as_ptr()).slice).cast::<T>().add(idx) }
         }
     }
 
     impl<T> Allocation<MaybeUninit<T>> {
-        /// Allocates an instance of an `Allocation` with uninitialized contents in the provided allocator
+        /// Allocates an instance of an `Allocation` with uninitialized contents in the provided allocator.
         pub(crate) fn allocate_uninit_in<A: Allocator>(len: usize, allocator: &A) -> NonNull<Self> {
             let layout = Self::get_layout(len).unwrap();
             let ptr = NonNull::<Self>::from_raw_parts(
@@ -588,18 +590,15 @@ pub(crate) mod alloc {
                     .cast::<()>(),
                 len,
             );
-            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it.
             unsafe {
-                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
-                    lock: InnerRwLock::new(),
-                    state: LockState::new(),
-                });
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata::new());
             }
             ptr
         }
 
         /// Allocates an instance of an `Allocation` with uninitialized contents in the provided allocator,
-        /// returning an error if the allocation fails
+        /// returning an error if the allocation fails.
         pub(crate) fn try_allocate_uninit_in<A: Allocator>(
             len: usize,
             allocator: &A,
@@ -609,18 +608,15 @@ pub(crate) mod alloc {
                 Err(_) => return Err(AllocError),
             };
             let ptr = NonNull::<Self>::from_raw_parts(allocator.allocate(layout)?.cast::<()>(), len);
-            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it.
             unsafe {
-                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
-                    lock: InnerRwLock::new(),
-                    state: LockState::new(),
-                });
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata::new());
             }
             Ok(ptr)
         }
 
         /// Allocates an instance of an `Allocation` with uninitialized contents,
-        /// with the `slice` field being filled with `0` bytes in the provided allocator
+        /// with the `slice` field being filled with `0` bytes in the provided allocator.
         pub(crate) fn allocate_zeroed_in<A: Allocator>(len: usize, allocator: &A) -> NonNull<Self> {
             let layout = Self::get_layout(len).unwrap();
             let ptr = NonNull::<Self>::from_raw_parts(
@@ -630,19 +626,16 @@ pub(crate) mod alloc {
                     .cast::<()>(),
                 len,
             );
-            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it.
             unsafe {
-                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
-                    lock: InnerRwLock::new(),
-                    state: LockState::new(),
-                });
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata::new());
             }
             ptr
         }
 
         /// Allocates an instance of an `Allocation` with uninitialized contents,
         /// with the `slice` field being filled with `0` bytes in the provided allocator,
-        /// returning an error if allocation fails
+        /// returning an error if allocation fails.
         pub(crate) fn try_allocate_zeroed_in<A: Allocator>(
             len: usize,
             allocator: &A,
@@ -652,12 +645,9 @@ pub(crate) mod alloc {
                 Err(_) => return Err(AllocError),
             };
             let ptr = NonNull::<Self>::from_raw_parts(allocator.allocate_zeroed(layout)?.cast::<()>(), len);
-            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it
+            // SAFETY: `ptr` points to a valid allocation and has exclusive access to it.
             unsafe {
-                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata {
-                    lock: InnerRwLock::new(),
-                    state: LockState::new(),
-                });
+                (&raw mut (*ptr.as_ptr()).metadata).write(Metadata::new());
             }
             Ok(ptr)
         }

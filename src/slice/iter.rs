@@ -1,20 +1,15 @@
-use std::{
-    alloc::Allocator,
-    iter::FusedIterator,
-    mem::ManuallyDrop,
-    ops::Drop,
-    ptr::NonNull,
-};
+use std::{alloc::Allocator, iter::FusedIterator, mem::ManuallyDrop, ops::Drop, ptr::NonNull};
 
-use crate::{
-    inner::{self, alloc::Allocation}, ElemRwLock
-};
 use super::lock::SliceRwLock;
+use crate::{
+    ElemRwLock,
+    inner::{self, alloc::Allocation},
+};
 
 /// Element lock iterator.
-/// 
+///
 /// This struct is created by the [`iter`] method on [`SliceRwLock`]
-/// 
+///
 /// [`iter`]: SliceRwLock::iter
 #[clippy::has_significant_drop]
 pub struct Iter<T, A: Allocator> {
@@ -27,11 +22,16 @@ pub struct Iter<T, A: Allocator> {
 impl<T, A: Allocator> Iter<T, A> {
     /// Creates a new instance of `Iter` without checking whether `start + len` overflows.
     /// Does not increment the reference counter.
-    /// 
+    ///
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) const fn new_unchecked(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
+    pub(crate) const unsafe fn new_unchecked_not_increment(
+        start: usize,
+        len: usize,
+        allocation: NonNull<Allocation<T>>,
+        allocator: A,
+    ) -> Self {
         debug_assert!(start.checked_add(len).is_some());
 
         Self {
@@ -39,7 +39,7 @@ impl<T, A: Allocator> Iter<T, A> {
             // SAFETY: User-upheld invariant.
             end: unsafe { start.unchecked_add(len) },
             allocation,
-            allocator
+            allocator,
         }
     }
 
@@ -48,16 +48,16 @@ impl<T, A: Allocator> Iter<T, A> {
         debug_assert!(self.start <= self.end);
 
         let orig = ManuallyDrop::new(self);
-        unsafe { 
+        unsafe {
             // SAFETY: All invariants are upheld by construction.
             SliceRwLock::new_not_incremented(
-                orig.start, 
+                orig.start,
                 // SAFETY: By construction, `self.start <= self.end`.
-                orig.end.unchecked_sub(orig.start), 
-                orig.allocation, 
+                orig.end.unchecked_sub(orig.start),
+                orig.allocation,
                 // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
-                (&orig.allocator as *const A).read()
-            ) 
+                (&raw const orig.allocator).read(),
+            )
         }
     }
 }
@@ -70,7 +70,9 @@ impl<T, A: Allocator> Drop for Iter<T, A> {
         // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
         // The existance of `self` guarantees that the counter is at least 1.
         // By construction, `allocation` points to live and valid data.
-        unsafe { Allocation::drop_in_unchecked(self.allocation, &self.allocator); }
+        unsafe {
+            Allocation::drop_in_unchecked(self.allocation, &self.allocator);
+        }
     }
 }
 

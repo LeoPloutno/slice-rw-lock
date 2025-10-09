@@ -26,20 +26,21 @@ impl<T> Deref for ElemRwLockReadAllGuard<'_, T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: The allocation is valid and alive.
-        // Aliasing rules are protected by synchronization
-        unsafe { Allocation::get_all_disjoint(self.0.allocation) }
+        // SAFETY: By construction `allocation` points to live and valid data.
+        // Aliasing rules are protected by synchronization.
+        unsafe { Allocation::get_slice_disjoint(self.0.allocation) }
     }
 }
 
 impl<T> Drop for ElemRwLockReadAllGuard<'_, T> {
     fn drop(&mut self) {
-        // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
-        let metadata = unsafe { Allocation::get_metadata_disjoint(self.0.allocation) };
         unsafe {
-            // SAFETY: The counter is guaranteed to be at least `1` because
-            // when constructing `self` it has been incremented
-            metadata.lock.drop_all_reader_unchecked();
+            // SAFETY: By construction, `allocation` points to live and valid data.
+            Allocation::get_metadata_disjoint(self.0.allocation)
+                .lock
+                // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
+                // The existance of `self` guarantees that the counter is at least 1.
+                .drop_all_reader_unchecked();
         }
     }
 }
@@ -54,6 +55,8 @@ unsafe impl<T: Sync> Sync for ElemRwLockReadAllGuard<'_, T> {}
 
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
+    use super::ElemRwLockReadAllGuard;
+    use crate::inner::{Metadata, alloc::Allocation};
     use std::{
         fmt::{self, Debug, Display},
         mem::ManuallyDrop,
@@ -61,8 +64,20 @@ pub(crate) mod mapped {
         ptr::NonNull,
     };
 
-    use super::ElemRwLockReadAllGuard;
-    use crate::inner::{Metadata, alloc::Allocation};
+    /// RAII structure used to release the shared global write access of a lock when
+    /// dropped, which can point to a subfield of the protected data.
+    ///
+    /// This structure is created by the [`map`] and [`filter_map`] methods
+    /// on [`ElemRwLockReadAllGuard`].
+    ///
+    /// [`map`]: super::ElemRwLockReadAllGuard::map
+    /// [`filter_map`]: super::ElemRwLockReadAllGuard::filter_map
+    #[must_use = "if unused the ElemRwLock will immediately unlock"]
+    #[clippy::has_significant_drop]
+    pub struct MappedElemRwLockReadAllGuard<'a, T: ?Sized + 'a> {
+        lock: &'a Metadata,
+        data: NonNull<T>,
+    }
 
     impl<'a, T> ElemRwLockReadAllGuard<'a, T> {
         /// Makes a [`MappedElemRwLockReadAllGuard`] for a component of the borrowed data, e.g.
@@ -84,14 +99,12 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             let orig = ManuallyDrop::new(orig);
-            // SAFETY: The lifetime of the allocation pointed to by
-            // `orig.0.allocation` exceeds `'a` by the virtue of the latter
-            // not exceeding the lifetime of the lock which keeps it alive.
-            // Aliasing rules are upheld thanks to synchronization
-            // and `orig` not holding a (mutable) reference to the allocation
-            MappedElemRwLockReadAllGuard {
-                lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
-                data: NonNull::from_ref(f(unsafe { Allocation::get_all_disjoint(orig.0.allocation) })),
+            // SAFETY: All invariants are upheld by construction.
+            unsafe {
+                MappedElemRwLockReadAllGuard {
+                    lock: Allocation::get_metadata_disjoint(orig.0.allocation),
+                    data: NonNull::from_ref(f(Allocation::get_slice_disjoint(orig.0.allocation))),
+                }
             }
         }
 
@@ -114,15 +127,12 @@ pub(crate) mod mapped {
             F: FnOnce(&[T]) -> Option<&U>,
             U: ?Sized,
         {
-            // SAFETY: The lifetime of the allocation pointed to by
-            // `orig.0.allocation` exceeds `'a` by the virtue of the latter
-            // not exceeding the lifetime of the lock which keeps it alive.
-            // Aliasing rules are upheld thanks to synchronization
-            // and `orig` not holding a (mutable) reference to the allocation
-            match f(unsafe { Allocation::get_all_disjoint(orig.0.allocation) }) {
+            // SAFETY: All invariants are upheld by construction.
+            match f(unsafe { Allocation::get_slice_disjoint(orig.0.allocation) }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
                     Ok(MappedElemRwLockReadAllGuard {
+                        // SAFETY: By construction, `allocation` points to live and valid data.
                         lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
                         data: NonNull::from_ref(data),
                     })
@@ -130,21 +140,6 @@ pub(crate) mod mapped {
                 None => Err(orig),
             }
         }
-    }
-
-    /// RAII structure used to release the shared global write access of a lock when
-    /// dropped, which can point to a subfield of the protected data.
-    ///
-    /// This structure is created by the [`map`] and [`filter_map`] methods
-    /// on [`ElemRwLockReadAllGuard`].
-    ///
-    /// [`map`]: super::ElemRwLockReadAllGuard::map
-    /// [`filter_map`]: super::ElemRwLockReadAllGuard::filter_map
-    #[must_use = "if unused the ElemRwLock will immediately unlock"]
-    #[clippy::has_significant_drop]
-    pub struct MappedElemRwLockReadAllGuard<'a, T: ?Sized + 'a> {
-        lock: &'a Metadata,
-        data: NonNull<T>,
     }
 
     impl<'a, T: ?Sized + 'a> MappedElemRwLockReadAllGuard<'a, T> {
@@ -166,10 +161,10 @@ pub(crate) mod mapped {
             F: FnOnce(&T) -> &U,
             U: ?Sized,
         {
+            // SAFETY: No other pointer to the object can access it due to the
+            // synchronization provided by the lock.
             let data = NonNull::from_ref(f(unsafe { orig.data.as_ref() }));
             let orig = ManuallyDrop::new(orig);
-            // SAFETY: No other pointer to the object can access it due to the
-            // synchronization provided by the lock
             MappedElemRwLockReadAllGuard { lock: orig.lock, data }
         }
 
@@ -193,7 +188,7 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             // SAFETY: No other pointer to the object can access it due to the
-            // synchronization provided by the lock
+            // synchronization provided by the lock.
             match f(unsafe { orig.data.as_ref() }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
@@ -212,17 +207,16 @@ pub(crate) mod mapped {
 
         fn deref(&self) -> &Self::Target {
             // SAFETY: The only way to obtain a pointer to this pointee is to transform the only
-            // guard protecting it via `map` or `filter_map`, which transfers ownership one-to-one
+            // guard protecting it via `map` or `filter_map`, which transfers ownership one-to-one.
             unsafe { self.data.as_ref() }
         }
     }
 
     impl<'a, T: ?Sized + 'a> Drop for MappedElemRwLockReadAllGuard<'a, T> {
         fn drop(&mut self) {
-            // SAFETY: `self.inner.allocation` is not deallocated until the last lock is dropped
+            // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
+            // The existance of `self` guarantees that the counter is at least 1.
             unsafe {
-                // SAFETY: The counter is guaranteed to be at least `1` because
-                // when constructing `self` it has been incremented
                 self.lock.lock.drop_all_reader_unchecked();
             }
         }
