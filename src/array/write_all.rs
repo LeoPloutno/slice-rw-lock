@@ -35,7 +35,7 @@ impl<T, const N: usize> Deref for ArrayRwLockWriteAllGuard<'_, T, N> {
 
 impl<T, const N: usize> DerefMut for ArrayRwLockWriteAllGuard<'_, T, N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: The allocation is valid and alive.
+        // SAFETY: By construction `allocation` points to live and valid data.
         // Aliasing rules are protected by synchronization.
         unsafe { Allocation::get_slice_mut_disjoint(self.0.allocation) }
     }

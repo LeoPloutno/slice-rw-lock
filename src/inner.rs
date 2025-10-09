@@ -408,7 +408,7 @@ impl Metadata {
 }
 
 pub(crate) mod alloc {
-    use crate::inner::{InnerRwLock, LockState, Metadata};
+    use crate::inner::Metadata;
     use std::{
         alloc::{AllocError, Allocator, Layout, LayoutError, handle_alloc_error},
         mem::{MaybeUninit, needs_drop},

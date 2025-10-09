@@ -10,7 +10,7 @@ use std::{
     ptr::NonNull,
     sync::{
         LockResult, PoisonError, TryLockError, TryLockResult,
-        atomic::{self, Ordering},
+        atomic::Ordering,
     },
 };
 
