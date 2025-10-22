@@ -1,6 +1,14 @@
 use super::lock::SliceRwLock;
 use crate::inner::{self, alloc::Allocation};
-use std::{alloc::Allocator, iter::FusedIterator, mem::ManuallyDrop, num::NonZeroUsize, ops::Drop, ptr::NonNull};
+use std::{
+    alloc::{Allocator, Global},
+    fmt::{self, Debug},
+    iter::FusedIterator,
+    mem::ManuallyDrop,
+    num::NonZeroUsize,
+    ops::Drop,
+    ptr::NonNull,
+};
 
 /// An iterator over a `SliceRwlock` in locks to (non-overlapping) chunks (`chunk_size` elements at a
 /// time), starting at the beginning of the slice.
@@ -14,7 +22,7 @@ use std::{alloc::Allocator, iter::FusedIterator, mem::ManuallyDrop, num::NonZero
 /// [`remainder`]: ChunksExact::remainder
 /// [`chunks_exact`]: SliceRwLock::chunks_exact
 #[clippy::has_significant_drop]
-pub struct ChunksExact<T, A: Allocator> {
+pub struct ChunksExact<T, A: Allocator = Global> {
     remainder_start: usize,
     remainder_len: usize,
     chunk_size: NonZeroUsize,
@@ -31,7 +39,7 @@ impl<T, A: Allocator> ChunksExact<T, A> {
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) const fn new_unchecked_not_increment(
+    pub(crate) const unsafe fn new_unchecked_not_increment(
         chunk_size: NonZeroUsize,
         start: usize,
         len: usize,
@@ -39,8 +47,7 @@ impl<T, A: Allocator> ChunksExact<T, A> {
         allocator: A,
     ) -> Self {
         // Shenanigans to bypass the `%` operator not being const.
-        // SAFETY: `chunk_size` is non-zero.
-        let remainder_len = unsafe { len.checked_rem(chunk_size.get()).unwrap_unchecked() };
+        let remainder_len = len.checked_rem(chunk_size.get()).unwrap();
         // SAFETY: `start <= start + len - len % chunk_size < start + len`.
         // Assuming user-upheld invariant, this cannot overflow.
         let end = unsafe { start.unchecked_add(len).unchecked_sub(remainder_len) };
@@ -99,7 +106,7 @@ impl<T, A: Allocator + Clone> Iterator for ChunksExact<T, A> {
             let start = self.start;
             unsafe {
                 // SAFETY: By construction, `end - start` is a multiple of `chunk_size`.
-                // Checked above that `start < end`, so they must be at least `chunks_size` apart.
+                // Checked above that `start < end`, so they must be at least `chunk_size` apart.
                 self.start = self.start.unchecked_add(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
                 Some(SliceRwLock::new(
@@ -173,7 +180,7 @@ impl<T, A: Allocator + Clone> DoubleEndedIterator for ChunksExact<T, A> {
         if self.start < self.end {
             unsafe {
                 // SAFETY: By construction, `end - start` is a multiple of `chunk_size`.
-                // Checked above that `start < end`, so they must be at least `chunks_size` apart.
+                // Checked above that `start < end`, so they must be at least `chunk_size` apart.
                 self.end = self.end.unchecked_sub(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
                 Some(SliceRwLock::new(
@@ -200,3 +207,16 @@ impl<T, A: Allocator + Clone> ExactSizeIterator for ChunksExact<T, A> {
 }
 
 impl<T, A: Allocator + Clone> FusedIterator for ChunksExact<T, A> {}
+
+impl<T, A: Allocator> Debug for ChunksExact<T, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChunksExact")
+            .field("remainder_start", &self.remainder_start)
+            .field("remainder_len", &self.remainder_len)
+            .field("chunk_size", &self.chunk_size)
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("allocation", &self.allocation)
+            .finish_non_exhaustive()
+    }
+}

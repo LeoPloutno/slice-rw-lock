@@ -1,4 +1,11 @@
-use std::{alloc::Allocator, iter::FusedIterator, num::NonZeroUsize, ops::Drop, ptr::NonNull};
+use std::{
+    alloc::{Allocator, Global},
+    fmt::{self, Debug},
+    iter::FusedIterator,
+    num::NonZeroUsize,
+    ops::Drop,
+    ptr::NonNull,
+};
 
 use super::lock::SliceRwLock;
 use crate::inner::{self, alloc::Allocation};
@@ -13,7 +20,7 @@ use crate::inner::{self, alloc::Allocation};
 ///
 /// [`rchunks`]: SliceRwLock::rchunks
 #[clippy::has_significant_drop]
-pub struct RChunks<T, A: Allocator> {
+pub struct RChunks<T, A: Allocator = Global> {
     chunk_size: NonZeroUsize,
     start: usize,
     end: usize,
@@ -221,3 +228,14 @@ impl<T, A: Allocator + Clone> ExactSizeIterator for RChunks<T, A> {
 }
 
 impl<T, A: Allocator + Clone> FusedIterator for RChunks<T, A> {}
+
+impl<T, A: Allocator> Debug for RChunks<T, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RChunks")
+            .field("chunk_size", &self.chunk_size)
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("allocation", &self.allocation)
+            .finish_non_exhaustive()
+    }
+}

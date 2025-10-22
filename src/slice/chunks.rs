@@ -1,4 +1,11 @@
-use std::{alloc::Allocator, iter::FusedIterator, num::NonZeroUsize, ops::Drop, ptr::NonNull};
+use std::{
+    alloc::{Allocator, Global},
+    fmt::{self, Debug},
+    iter::FusedIterator,
+    num::NonZeroUsize,
+    ops::Drop,
+    ptr::NonNull,
+};
 
 use super::lock::SliceRwLock;
 use crate::inner::{self, alloc::Allocation};
@@ -13,7 +20,7 @@ use crate::inner::{self, alloc::Allocation};
 ///
 /// [`chunks`]: SliceRwLock::chunks
 #[clippy::has_significant_drop]
-pub struct Chunks<T, A: Allocator> {
+pub struct Chunks<T, A: Allocator = Global> {
     chunk_size: NonZeroUsize,
     start: usize,
     end: usize,
@@ -222,3 +229,14 @@ impl<T, A: Allocator + Clone> ExactSizeIterator for Chunks<T, A> {
 }
 
 impl<T, A: Allocator + Clone> FusedIterator for Chunks<T, A> {}
+
+impl<T, A: Allocator> Debug for Chunks<T, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Chunks")
+            .field("chunk_size", &self.chunk_size)
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("allocation", &self.allocation)
+            .finish_non_exhaustive()
+    }
+}

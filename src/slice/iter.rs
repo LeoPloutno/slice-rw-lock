@@ -1,4 +1,11 @@
-use std::{alloc::Allocator, iter::FusedIterator, mem::ManuallyDrop, ops::Drop, ptr::NonNull};
+use std::{
+    alloc::{Allocator, Global},
+    fmt::{self, Debug},
+    iter::FusedIterator,
+    mem::ManuallyDrop,
+    ops::Drop,
+    ptr::NonNull,
+};
 
 use super::lock::SliceRwLock;
 use crate::{
@@ -12,7 +19,7 @@ use crate::{
 ///
 /// [`iter`]: SliceRwLock::iter
 #[clippy::has_significant_drop]
-pub struct Iter<T, A: Allocator> {
+pub struct Iter<T, A: Allocator = Global> {
     start: usize,
     end: usize,
     allocation: NonNull<Allocation<T>>,
@@ -44,7 +51,7 @@ impl<T, A: Allocator> Iter<T, A> {
     }
 
     /// Converts into a guard to the underlying data.
-    pub fn into_slice_rw_lock(self) -> SliceRwLock<T, A> {
+    pub fn into_slice(self) -> SliceRwLock<T, A> {
         debug_assert!(self.start <= self.end);
 
         let orig = ManuallyDrop::new(self);
@@ -52,7 +59,7 @@ impl<T, A: Allocator> Iter<T, A> {
             // SAFETY: All invariants are upheld by construction.
             SliceRwLock::new_not_incremented(
                 orig.start,
-                // SAFETY: By construction, `self.start <= self.end`.
+                // SAFETY: By construction, `start <= end`.
                 orig.end.unchecked_sub(orig.start),
                 orig.allocation,
                 // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
@@ -155,3 +162,13 @@ impl<T, A: Allocator + Clone> ExactSizeIterator for Iter<T, A> {
 }
 
 impl<T, A: Allocator + Clone> FusedIterator for Iter<T, A> {}
+
+impl<T, A: Allocator> Debug for Iter<T, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Iter")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("allocation", &self.allocation)
+            .finish_non_exhaustive()
+    }
+}

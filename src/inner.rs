@@ -30,6 +30,9 @@ impl InnerRwLock {
     }
 
     /// Blocks until disjoint write access can be granted.
+    ///
+    /// # Aborts
+    /// Aborts the process on overflow of the guard counter.
     pub(crate) fn write(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -72,6 +75,9 @@ impl InnerRwLock {
     }
 
     /// Attempts to acquire disjoint write access without blocking. Returns whether the operation succeeded.
+    ///
+    /// # Aborts
+    /// Aborts the process on overflow of the guard counter.
     pub(crate) fn try_write(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -113,6 +119,9 @@ impl InnerRwLock {
     }
 
     /// Blocks until global read access can be granted.
+    ///
+    /// # Aborts
+    /// Aborts the process on overflow of the guard counter.
     pub(crate) fn read_all(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
@@ -155,6 +164,9 @@ impl InnerRwLock {
     }
 
     /// Attempts to acquire global read access without blocking. Returns whether the operation succeeded.
+    ///
+    /// # Aborts
+    /// Aborts the process on overflow of the guard counter.
     pub(crate) fn try_read_all(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {

@@ -8,10 +8,7 @@ use std::{
     panic::{RefUnwindSafe, UnwindSafe},
     process,
     ptr::NonNull,
-    sync::{
-        LockResult, PoisonError, TryLockError, TryLockResult,
-        atomic::Ordering,
-    },
+    sync::{LockResult, PoisonError, TryLockError, TryLockResult, atomic::Ordering},
 };
 
 pub(super) struct InnerArrayRwLock<T> {
