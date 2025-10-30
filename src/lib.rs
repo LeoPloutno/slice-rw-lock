@@ -1,4 +1,5 @@
-#![feature(ptr_metadata, allocator_api)]
+#![cfg_attr(feature = "strip_trim_prefix_suffix", feature(slice_pattern))]
+#![feature(ptr_metadata, allocator_api, one_sided_range)]
 #![allow(dead_code)]
 
 mod array;
@@ -9,7 +10,7 @@ mod slice;
 #[rustfmt::skip]
 pub use crate::{
     elem::{
-        lock::ElemRwLock, 
+        lock::ElemRwLock,
         read_all::ElemRwLockReadAllGuard,
         write::ElemRwLockWriteGuard,
         write_all::ElemRwLockWriteAllGuard,
@@ -26,7 +27,7 @@ pub use crate::{
 #[rustfmt::skip]
 pub use crate::{
     elem::{
-        read_all::mapped::MappedElemRwLockReadAllGuard, 
+        read_all::mapped::MappedElemRwLockReadAllGuard,
         write::mapped::MappedElemRwLockWriteGuard,
         write_all::mapped::MappedElemRwLockWriteAllGuard,
     },

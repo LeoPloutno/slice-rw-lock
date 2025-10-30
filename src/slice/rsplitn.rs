@@ -94,7 +94,7 @@ where
             0 => {
                 inner::cold_path();
                 None
-            },
+            }
             1 => {
                 inner::cold_path();
                 let end_old = self.end;
@@ -107,16 +107,16 @@ where
                         // SAFETY: By construction, `start <= end`.
                         end_old.unchecked_sub(self.start),
                         self.allocation,
-                        self.allocator.clone()
+                        self.allocator.clone(),
                     ))
                 }
-            },
+            }
             _ => {
                 let end_old = self.end;
                 let guard = unsafe {
                     // SAFETY: The guard is dropped after the loop.
                     PanicWriteGuard::new(
-                        // By construction, `allocation` points to live and valid data.
+                        // SAFETY: By construction, `allocation` points to live and valid data.
                         &Allocation::get_metadata_disjoint(self.allocation).lock,
                     )
                 };
@@ -159,11 +159,16 @@ where
         } else {
             // In the extreme case, every element matches the predicate.
             // SAFETY: By construction, `start <= end`.
-            (1, Some(usize::min(self.remaining_iters, unsafe { self.end.unchecked_sub(self.start) } + 1)))
+            (
+                1,
+                Some(usize::min(
+                    self.remaining_iters,
+                    unsafe { self.end.unchecked_sub(self.start) } + 1,
+                )),
+            )
         }
     }
 }
-
 
 impl<T, P, A> FusedIterator for RSplitN<T, P, A>
 where

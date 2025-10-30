@@ -478,6 +478,29 @@ pub(crate) mod alloc {
             }
         }
 
+        /// Returns a pointer to the slice part of the allocation pointedf to by `ptr`.
+        ///
+        /// # Safety
+        /// `ptr` must point to a valid and live instance of `Allocation<T>`.
+        pub(crate) unsafe fn get_slice(ptr: NonNull<Self>) -> NonNull<[T]> {
+            unsafe {
+                // SAFETY: A raw pointer to a field is never null.
+                NonNull::new_unchecked(
+                    // SAFETY: User-upheld invariant.
+                    &raw mut (*ptr.as_ptr()).slice,
+                )
+            }
+        }
+
+        /// Returns the length of the underlying slice pointed to by `ptr`.
+        ///
+        /// # Safety
+        /// `ptr` must point to a valid and live instance of `Allocation<T>`.
+        pub(crate) unsafe fn len(ptr: NonNull<Self>) -> usize {
+            // SAFETY: User-upheld invariant
+            unsafe { &raw const (*ptr.as_ptr()).slice }.len()
+        }
+
         /// Returns a reference to the metadata of the `Allocation` referenced by `ptr`
         /// without constructing a reference to the whole object.
         ///

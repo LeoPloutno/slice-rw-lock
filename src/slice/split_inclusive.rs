@@ -111,7 +111,7 @@ where
             let guard = unsafe {
                 // SAFETY: The guard is dropped after the loop.
                 PanicWriteGuard::new(
-                    // By construction, `allocation` points to live and valid data.
+                    // SAFETY: By construction, `allocation` points to live and valid data.
                     &Allocation::get_metadata_disjoint(self.allocation).lock,
                 )
             };
@@ -122,7 +122,8 @@ where
                 // SAFETY: By construction, `allocation` points to live and valid data
                 // and the accessed (sub)slice is locked behind local exclusive access.
                 // Checked above that `start < end`.
-                let matches_pred = unsafe { (self.predicate)(Allocation::get_elem_disjoint(self.allocation, self.start)) };
+                let matches_pred =
+                    unsafe { (self.predicate)(Allocation::get_elem_disjoint(self.allocation, self.start)) };
                 // SAFETY: Checked above that `start < end`.
                 self.start = unsafe { self.start.unchecked_add(1) };
                 if matches_pred {
@@ -176,7 +177,7 @@ where
             let guard = unsafe {
                 // SAFETY: The guard is dropped after the loop.
                 PanicWriteGuard::new(
-                    // By construction, `allocation` points to live and valid data.
+                    // SAFETY: By construction, `allocation` points to live and valid data.
                     &Allocation::get_metadata_disjoint(self.allocation).lock,
                 )
             };

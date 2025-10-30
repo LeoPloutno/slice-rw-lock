@@ -1,10 +1,7 @@
 use crate::{
     array::lock::ArrayRwLock,
+    inner::{self, alloc::Allocation},
     slice::lock::SliceRwLock,
-    inner::{
-        self, 
-        alloc::Allocation
-    }
 };
 use std::{
     alloc::{Allocator, Global},
@@ -113,11 +110,7 @@ impl<T, const N: usize, A: Allocator + Clone> Iterator for RArrayChunks<T, N, A>
                 // Checked above that `start < end`, so they must be at least `N` apart.
                 self.end = self.end.unchecked_sub(N);
                 // SAFETY: All invariants are upheld by construction.
-                Some(ArrayRwLock::new(
-                    self.end,
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(ArrayRwLock::new(self.end, self.allocation, self.allocator.clone()))
             }
         } else {
             inner::cold_path();
@@ -154,11 +147,7 @@ impl<T, const N: usize, A: Allocator + Clone> Iterator for RArrayChunks<T, N, A>
                 // of `N`, so `start` and `end - n * N` must be at least `N` apart.
                 self.end = self.end.unchecked_sub(skip).unchecked_sub(N);
                 // SAFETY: All invariants are upheld by construction.
-                Some(ArrayRwLock::new(
-                    self.end,
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(ArrayRwLock::new(self.end, self.allocation, self.allocator.clone()))
             },
             Some(_) => {
                 self.start = self.end;
@@ -185,11 +174,7 @@ impl<T, const N: usize, A: Allocator + Clone> DoubleEndedIterator for RArrayChun
                 // Checked above that `start < end`, so they must be at least `N` apart.
                 self.start = self.start.unchecked_add(N);
                 // SAFETY: All invariants are upheld by construction.
-                Some(ArrayRwLock::new(
-                    start_old,
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(ArrayRwLock::new(start_old, self.allocation, self.allocator.clone()))
             }
         } else {
             inner::cold_path();

@@ -1,33 +1,25 @@
 use super::{
-    panic_guard::PanicWriteGuard,
-    array_chunks::ArrayChunks,
-    rarray_chunks::RArrayChunks,
-    chunks::Chunks, 
-    chunks_exact::ChunksExact, 
-    iter::Iter, 
-    rchunks::RChunks,
-    rchunks_exact::RChunksExact, 
-    chunk_by::ChunkBy, 
-    split::Split,
-    split_inclusive::SplitInclusive,
-    rsplit::RSplit,
-    splitn::SplitN,
-    rsplitn::RSplitN,
-    read_all::SliceRwLockReadAllGuard, 
-    write::SliceRwLockWriteGuard,
-    write_all::SliceRwLockWriteAllGuard,
+    array_chunks::ArrayChunks, chunk_by::ChunkBy, chunks::Chunks, chunks_exact::ChunksExact, iter::Iter,
+    panic_guard::PanicWriteGuard, rarray_chunks::RArrayChunks, rchunks::RChunks, rchunks_exact::RChunksExact,
+    read_all::SliceRwLockReadAllGuard, rsplit::RSplit, rsplitn::RSplitN, split::Split, split_inclusive::SplitInclusive,
+    splitn::SplitN, write::SliceRwLockWriteGuard, write_all::SliceRwLockWriteAllGuard,
 };
 use crate::{
     array::lock::ArrayRwLock,
     elem::lock::ElemRwLock,
-    inner::{self, alloc::Allocation, LockState},
+    inner::{self, LockState, alloc::Allocation},
 };
+#[cfg(feature = "strip_trim_prefix_suffix")]
+use core::slice::SlicePattern;
+#[cfg(feature = "allocator_api")]
+use std::alloc::AllocError;
 use std::{
     alloc::{Allocator, Global},
     fmt::{self, Debug, Formatter},
     marker::PhantomData,
     mem::{self, ManuallyDrop, MaybeUninit},
     num::NonZeroUsize,
+    ops::{OneSidedRange, OneSidedRangeBound},
     panic::{RefUnwindSafe, UnwindSafe},
     process,
     ptr::NonNull,
@@ -73,12 +65,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `start` must index an element inside the array pointed to by `allocation`.
     /// * `start + len` must either index an element of said array or point one element past its end.
-    pub(crate) unsafe fn new(
-        start: usize, 
-        len: usize, 
-        allocation: NonNull<Allocation<T>>, 
-        allocator: A
-    ) -> Self {
+    pub(crate) unsafe fn new(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         if unsafe {
             Allocation::get_metadata_disjoint(allocation)
                 .state
@@ -89,6 +76,47 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
         }
         // SAFETY: User-upheld invariants.
         unsafe { Self::new_not_incremented(start, len, allocation, allocator) }
+    }
+
+    /// Returns a lock to the entire slice wrapped in `Ok` if `self` is the only
+    /// entity guarding the slice. Otherwise, returns `Err` containing the original lock.
+    pub fn into_all(mut self) -> Result<SliceRwLock<T, A>, Self> {
+        // SAFETY: By construction, `allocation` points to live and valid data.
+        if unsafe {
+            Allocation::get_metadata_disjoint(self.inner.allocation)
+                .state
+                .get_counter()
+        } == 1
+        {
+            self.inner.start = 0;
+            // SAFETY: By construction, `allocation` points to live and valid data.
+            self.inner.len = unsafe { Allocation::len(self.inner.allocation) };
+            Ok(self)
+        } else {
+            Err(self)
+        }
+    }
+
+    /// Gets a lock to the underlying array.
+    ///
+    /// If `N` is not exactly equal to the length of the slice guarded by `self`, then this method returns
+    /// `Err` containing the original lock.
+    #[cfg(feature = "slice_as_array")]
+    pub fn into_array<const N: usize>(self) -> Result<ArrayRwLock<T, N, A>, Self> {
+        if self.inner.len == N {
+            let orig = ManuallyDrop::new(self);
+            Ok(unsafe {
+                // SAFETY: All invariants are upheld by construction.
+                ArrayRwLock::new_not_incremented(
+                    orig.inner.start,
+                    orig.inner.allocation,
+                    // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                    (&orig.allocator as *const A).read(),
+                )
+            })
+        } else {
+            Err(self)
+        }
     }
 
     /// Locks the allocation guarded by this 'SliceRwLock' with shared global read access, blocking
@@ -583,7 +611,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
 
     /// Returns an iterator over locks to subslices separated by elements that match
     /// `pred`. The matched element is not contained in the subslices.
-    /// 
+    ///
     /// At each iteration, The unyielded elements are locked with exclusive access until the separator is found.
     pub fn split<F>(self, pred: F) -> Split<T, F, A>
     where
@@ -603,11 +631,10 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
         }
     }
 
-
     /// Returns an iterator over locks to subslices separated by elements that match
     /// `pred`. The matched element is contained in the end of the previous
     /// subslice as a terminator.
-    /// 
+    ///
     /// At each iteration, The unyielded elements are locked with exclusive access until the separator is found.
     pub fn split_inclusive<F>(self, pred: F) -> SplitInclusive<T, F, A>
     where
@@ -630,7 +657,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Returns an iterator over locks to subslices separated by elements that match
     /// `pred`, starting at the end of the slice and working backwards.
     /// The matched element is not contained in the subslices.
-    /// 
+    ///
     /// At each iteration, The unyielded elements are locked with exclusive access until the separator is found.
     pub fn rsplit<F>(self, pred: F) -> RSplit<T, F, A>
     where
@@ -656,7 +683,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     ///
     /// The last element returned, if any, will guard the remainder of the
     /// slice.
-    /// 
+    ///
     /// At each iteration except the last one, The unyielded elements are locked with exclusive access until the separator is found.
     pub fn splitn<F>(self, n: usize, pred: F) -> SplitN<T, F, A>
     where
@@ -684,7 +711,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     ///
     /// The last element returned, if any, will guard the remainder of the
     /// slice.
-    /// 
+    ///
     /// At each iteration except the last one, The unyielded elements are locked with exclusive access until the separator is found.
     pub fn rsplitn<F>(self, n: usize, pred: F) -> RSplitN<T, F, A>
     where
@@ -707,6 +734,30 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
 }
 
 impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
+    /// Converts a `Vec<T, A>` into a `SliceRwLock<T, A>`.
+    ///
+    /// This conversion allocates on the heap and moves the data.
+    pub fn from_vec(v: Vec<T, A>) -> Self {
+        let (ptr, len, capacity, allocator) = v.into_parts_with_alloc();
+        let ptr = ptr.cast::<MaybeUninit<T>>();
+        let _v = unsafe { Vec::from_parts_in(ptr, len, capacity, allocator.clone()) };
+        let ptr_reallocated = Allocation::<MaybeUninit<T>>::allocate_uninit_in(len, &allocator);
+        unsafe {
+            // SAFETY: Allocated above.
+            let slice_ptr_reallocated = Allocation::get_slice(ptr_reallocated);
+            // SAFETY: Both pointers point to live allocations produced by the same
+            // allocator, so the data cannot overlap.
+            slice_ptr_reallocated
+                .to_raw_parts()
+                .0
+                .cast()
+                .copy_from_nonoverlapping(ptr, len);
+            let (ptr, metadata) = ptr_reallocated.to_raw_parts();
+            // SAFETY: All invariants are upheld by construction.
+            Self::new(0, len, NonNull::from_raw_parts(ptr, metadata), allocator)
+        }
+    }
+
     /// Returns locks to the first and the rest of the slice guarded by `self`, or `Err` containing the original lock if it is empty.
     pub fn split_first(mut self) -> Result<(ElemRwLock<T, A>, Self), Self> {
         if self.inner.len > 0 {
@@ -867,16 +918,16 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
     /// predicate.
     ///
     /// If any matching elements are present in the guarded slice, returns locks to the prefix
-    /// before the match and suffix after. 
+    /// before the match and suffix after.
     /// If no elements match, returns `Err` containing the original lock.
-    /// 
+    ///
     /// Locks `self` with exclusive access.
     #[cfg(feature = "split_once")]
-    pub fn split_once<F>(mut self, mut pred: F) -> Result<(Self, Self), Self> 
-    where 
-        F: FnMut(&T) -> bool
+    pub fn split_once<F>(mut self, mut pred: F) -> Result<(Self, Self), Self>
+    where
+        F: FnMut(&T) -> bool,
     {
-        // SAFETY: By construction, `start + len` points within or right outside the allocation. 
+        // SAFETY: By construction, `start + len` points within or right outside the allocation.
         let end = unsafe { self.inner.start.unchecked_add(self.inner.len) };
         let mut curr = self.inner.start;
         let guard = unsafe {
@@ -909,14 +960,14 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
             self.inner.len = end.unchecked_sub(self.inner.start);
             Ok((
                 // SAFETY: All invariants are upheld by construction.
-                SliceRwLock::new(
+                Self::new(
                     start,
                     // SAFETY: By construction, `start <= curr`.
                     curr.unchecked_sub(self.inner.start),
                     self.inner.allocation,
-                    self.allocator.clone()
+                    self.allocator.clone(),
                 ),
-                self
+                self,
             ))
         }
     }
@@ -925,15 +976,16 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
     /// predicate.
     ///
     /// If any matching elements are present in the guarded slice, returns locks to the prefix
-    /// before the match and suffix after. 
+    /// before the match and suffix after.
     /// If no elements match, returns `Err` containing the original lock.
-    /// 
+    ///
     /// Locks `self` with exclusive access.
-    pub fn rsplit_once<F>(mut self, mut pred: F) -> Result<(Self, Self), Self> 
-    where 
-        F: FnMut(&T) -> bool
+    #[cfg(feature = "split_once")]
+    pub fn rsplit_once<F>(mut self, mut pred: F) -> Result<(Self, Self), Self>
+    where
+        F: FnMut(&T) -> bool,
     {
-        // SAFETY: By construction, `start + len` points within or right outside the allocation. 
+        // SAFETY: By construction, `start + len` points within or right outside the allocation.
         let end = unsafe { self.inner.start.unchecked_add(self.inner.len) };
         let mut curr = end;
         let guard = unsafe {
@@ -965,52 +1017,334 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
             self.inner.len = end.unchecked_sub(self.inner.start);
             Ok((
                 // SAFETY: All invariants are upheld by construction.
-                SliceRwLock::new(
+                Self::new(
                     start,
                     // SAFETY: By construction, `start <= curr`.
                     curr.unchecked_sub(self.inner.start),
                     self.inner.allocation,
-                    self.allocator.clone()
+                    self.allocator.clone(),
                 ),
-                self
+                self,
             ))
         }
     }
 
-    pub fn split_off_first(&mut self) -> Option<ElemRwLock<T, A>> {
-        todo!()
-    }
-
-    pub fn split_off_last(&mut self) -> Option<ElemRwLock<T, A>> {
-        todo!()
-    }
-}
-
-#[cfg(feature = "slice_as_array")]
-impl<T, A: Allocator> SliceRwLock<T, A> {
-    /// Gets a lock to the underlying array.
-    ///
-    /// If `N` is not exactly equal to the length of the slice guarded by `self`, then this method returns
-    /// `Err` containing the original lock.
-    pub fn into_array<const N: usize>(self) -> Result<ArrayRwLock<T, N, A>, Self> {
-        if self.inner.len == N {
-            let orig = ManuallyDrop::new(self);
-            Ok(unsafe {
-                // SAFETY: All invariants are upheld by construction.
-                ArrayRwLock::new_not_incremented(
-                    orig.inner.start,
-                    orig.inner.allocation,
-                    // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
-                    (&orig.allocator as *const A).read(),
-                )
-            })
+    // Returns a lock to a subslice with the prefix removed.
+    //
+    // If the guarded slice starts with `prefix`, returns a lock to the subslice after the prefix, wrapped in `Ok`.
+    // If `prefix` is empty, simply returns a the original lock. If `prefix` is equal to the
+    // original slice, returns a lock to an empty slice.
+    //
+    // If the slice does not start with `prefix`, returns `Err` containing the original lock.
+    //
+    // Locks `self` with exlcusive access.
+    #[cfg(feature = "strip_trim_prefix_suffix")]
+    pub fn strip_prefix<P>(mut self, prefix: &P) -> Result<Self, Self>
+    where
+        P: SlicePattern<Item = T> + ?Sized,
+        T: PartialEq,
+    {
+        // SAFETY: By construction, `allocation` points to live and valid data.
+        let lock = unsafe { &Allocation::get_metadata_disjoint(self.inner.allocation).lock };
+        lock.write();
+        // SAFETY: By construction, `alocation` points to live and valid data.
+        // Aliasing rules are upheld via synchronization.
+        let data =
+            unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
+        let prefix = prefix.as_slice();
+        let n = prefix.len();
+        let ret = if n <= self.inner.len {
+            // SAFETY: Checked above that `n < len`.
+            let (head, _) = unsafe { data.split_at_unchecked(n) };
+            if head == prefix {
+                unsafe {
+                    // SAFETY: Checked above that `n <= len`, which implies `start + n <= start + len`.
+                    self.inner.start = self.inner.start.unchecked_add(n);
+                    // SAFETY: Checked above that `n <= len`.
+                    self.inner.len = self.inner.len.unchecked_sub(n);
+                }
+                Ok(self)
+            } else {
+                Err(self)
+            }
         } else {
             Err(self)
+        };
+        // SAFETY: Locked the slice with `write` access previously.
+        unsafe {
+            lock.drop_writer_unchecked();
+        }
+        ret
+    }
+
+    // Returns a lock to a subslice with the suffix removed.
+    //
+    // If the guarded slice ends with `suffix`, returns a lock to the subslice before the suffix, wrapped in `Ok`.
+    // If `suffix` is empty, simply returns the original lock. If `suffix` is equal to the
+    // original slice, returns a lock to an empty slice.
+    //
+    // If the slice does not start with `suffix`, returns `Err` containing the original lock.
+    //
+    // Locks `self` with exclusive access.
+    #[cfg(feature = "strip_trim_prefix_suffix")]
+    pub fn strip_suffix<P>(mut self, suffix: &P) -> Result<Self, Self>
+    where
+        P: SlicePattern<Item = T> + ?Sized,
+        T: PartialEq,
+    {
+        // SAFETY: By construction, `allocation` points to live and valid data.
+        let lock = unsafe { &Allocation::get_metadata_disjoint(self.inner.allocation).lock };
+        lock.write();
+        // SAFETY: By construction, `alocation` points to live and valid data.
+        // Aliasing rules are upheld via synchronization.
+        let data =
+            unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
+        let suffix = suffix.as_slice();
+        let n = suffix.len();
+        let ret = if n <= self.inner.len {
+            // SAFETY: Checked above that `n < len`.
+            let (_, tail) = unsafe { data.split_at_unchecked(self.inner.len.unchecked_sub(n)) };
+            if tail == suffix {
+                // SAFETY: Checked above that `n <= len`.
+                unsafe {
+                    self.inner.len = self.inner.len.unchecked_sub(n);
+                }
+                Ok(self)
+            } else {
+                Err(self)
+            }
+        } else {
+            Err(self)
+        };
+        // SAFETY: Locked the slice with `write` access previously.
+        unsafe {
+            lock.drop_writer_unchecked();
+        }
+        ret
+    }
+
+    // Returns a lock to a subslice with the optional prefix removed.
+    //
+    // If the guarded slice starts with `prefix`, returns a lock to the subslice after the prefix. If `prefix`
+    // is empty or the slice does not start with `prefix`, simply returns the original lock.
+    // If `prefix` is equal to the original slice, returns a lock to an empty slice.
+    //
+    // Locks `self` with exclusive access.
+    #[cfg(feature = "strip_trim_prefix_suffix")]
+    pub fn trim_prefix<P>(self, prefix: &P) -> Self
+    where
+        P: SlicePattern<Item = T> + ?Sized,
+        T: PartialEq,
+    {
+        match self.strip_prefix(prefix) {
+            Ok(lock) => lock,
+            Err(lock) => lock,
+        }
+    }
+
+    // Returns a lock to a subslice with the optional suffix removed.
+    //
+    // If the guarded slice ends with `suffix`, returns a lock to the subslice before the suffix. If `suffix`
+    // is empty or the slice does not end with `suffix`, simply returns the original lock.
+    // If `suffix` is equal to the original slice, returns a lock to an empty slice.
+    //
+    // Locks `self` with exclusive access.
+    #[cfg(feature = "strip_trim_prefix_suffix")]
+    pub fn trim_suffix<P>(self, suffix: &P) -> Self
+    where
+        P: SlicePattern<Item = T> + ?Sized,
+        T: PartialEq,
+    {
+        match self.strip_suffix(suffix) {
+            Ok(lock) => lock,
+            Err(lock) => lock,
+        }
+    }
+
+    // Removes the subslice corresponding to the given range
+    // and returns a lock to it.
+    //
+    // Returns `None` and does not modify the the lock if the given
+    // range is out of bounds.
+    //
+    // Note that this method only accepts one-sided ranges such as
+    // `2..` or `..6`, but not `2..6`.
+    pub fn split_off<R>(&mut self, range: R) -> Option<Self>
+    where
+        R: OneSidedRange<usize>,
+    {
+        match range.bound() {
+            (OneSidedRangeBound::End, bound_end) if bound_end <= self.inner.len => {
+                let start_old = self.inner.start;
+                unsafe {
+                    // SAFETY: Checked above that `bound_end <= len`, which implies `start + end <= start + len`.
+                    self.inner.start = self.inner.start.unchecked_add(bound_end);
+                    // SAFETY: Checked above that `bound_end <= len`.
+                    self.inner.len = self.inner.len.unchecked_sub(bound_end);
+                    // SAFETY: All invariants are upheld by construction.
+                    Some(Self::new(
+                        start_old,
+                        bound_end,
+                        self.inner.allocation,
+                        self.allocator.clone(),
+                    ))
+                }
+            }
+            (OneSidedRangeBound::EndInclusive, bound_end) if bound_end < self.inner.len => {
+                let start_old = self.inner.start;
+                unsafe {
+                    // SAFETY: Checked above that `bound_end < len`, which implies `start + bound_end + 1 <= start + len`.
+                    self.inner.start = self.inner.start.unchecked_add(bound_end).unchecked_add(1);
+                    // SAFETY: Checked above that `bound_end < len`.
+                    self.inner.len = self.inner.len.unchecked_sub(bound_end).unchecked_sub(1);
+                    // SAFETY: All invariants are upheld by construction.
+                    Some(Self::new(
+                        start_old,
+                        // SAFETY: Checked aboce that `bound_end < len`.
+                        bound_end.unchecked_add(1),
+                        self.inner.allocation,
+                        self.allocator.clone(),
+                    ))
+                }
+            }
+            (OneSidedRangeBound::StartInclusive, bound_start) if bound_start < self.inner.len => {
+                self.inner.len = bound_start;
+                unsafe {
+                    Some(Self::new(
+                        // SAFETY: Checked above that `bound_start < len`,
+                        // which implies `start + bound_start < start + len`.
+                        self.inner.start.unchecked_add(bound_start),
+                        // SAFETY: Checked above that `bound_start < len`.
+                        self.inner.len.unchecked_sub(bound_start),
+                        self.inner.allocation,
+                        self.allocator.clone(),
+                    ))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    // Removes the first element of the guarded slice and returns a lock
+    // to it.
+    //
+    // Returns `None` if the slice is empty.
+    pub fn split_off_first(&mut self) -> Option<ElemRwLock<T, A>> {
+        if self.inner.len >= 1 {
+            let first = self.inner.start;
+            unsafe {
+                // SAFETY: Checked above that `1 <= len`, which implies `start + 1 <= start + len`.
+                self.inner.start = self.inner.start.unchecked_add(1);
+                // SAFETY: Checked above that `1 <= len`.
+                self.inner.len = self.inner.len.unchecked_sub(1);
+                // SAFETY: All invariants are upheld by construction.
+                Some(ElemRwLock::new(first, self.inner.allocation, self.allocator.clone()))
+            }
+        } else {
+            None
+        }
+    }
+
+    // Removes the last element of the guarded slice and returns a lock
+    // to it.
+    //
+    // Returns `None` if the slice is empty.
+    pub fn split_off_last(&mut self) -> Option<ElemRwLock<T, A>> {
+        if self.inner.len >= 1 {
+            unsafe {
+                // Checked above that `1 <= len`.
+                self.inner.len = self.inner.len.unchecked_sub(1);
+                Some(
+                    // SAFETY: All invariants are upheld by construction.
+                    ElemRwLock::new(
+                        // SAFETY: Checked above that `1 <= len`, which implies `start + len - 1 >= start`.
+                        self.inner.start.unchecked_add(self.inner.len),
+                        self.inner.allocation,
+                        self.allocator.clone(),
+                    ),
+                )
+            }
+        } else {
+            None
         }
     }
 }
 
+impl<T> SliceRwLock<MaybeUninit<T>> {
+    /// Constructs a new `SliceRwLock` with uninitialized contents.
+    pub fn new_uninit(len: usize) -> Self {
+        // SAFETY: All invariants are upheld by construction.
+        unsafe { Self::new(0, len, Allocation::allocate_uninit_in(len, &Global), Global) }
+    }
+
+    /// Constructs a new `SliceRwLock` with uninitialized contents,
+    /// with the memory being filled with `0` bytes.
+    pub fn new_zeroed(len: usize) -> Self {
+        // SAFETY: All invariants are upheld by construction.
+        unsafe { Self::new(0, len, Allocation::allocate_zeroed_in(len, &Global), Global) }
+    }
+
+    /// Constructs a new `SliceRwlock` with uninitialized contents,
+    /// returning an error if the allocation fails.
+    #[cfg(feature = "allocator_api")]
+    pub fn try_new_uninit(len: usize) -> Result<Self, AllocError> {
+        // SAFETY: All invariants are upheld by construction.
+        Allocation::try_allocate_uninit_in(len, &Global).map(|ptr| unsafe { Self::new(0, len, ptr, Global) })
+    }
+
+    /// Constructs a new `SliceRwLock` with uninitialized contents,
+    /// with the memory being filled with `0` bytes,
+    /// returning an error if the allocation fails.
+    #[cfg(feature = "allocator_api")]
+    pub fn try_new_zeroed(len: usize) -> Result<Self, AllocError> {
+        // SAFETY: All invariants are upheld by construction.
+        Allocation::try_allocate_zeroed_in(len, &Global).map(|ptr| unsafe { Self::new(0, len, ptr, Global) })
+    }
+}
+
 impl<T, A: Allocator> SliceRwLock<MaybeUninit<T>, A> {
+    /// Constructs a new `SliceRwLock` with uninitialized contents in the provided allocator.
+    #[cfg(feature = "allocator_api")]
+    pub fn new_uninit_in(len: usize, allocator: A) -> Self {
+        // SAFETY: All invariants are upheld by construction.
+        unsafe { Self::new(0, len, Allocation::allocate_uninit_in(len, &allocator), allocator) }
+    }
+
+    /// Constructs a new `SliceRwLock` with uninitialized contents,
+    /// with the memory being filled with `0` bytes, in the provided allocator.
+    ///
+    /// See [`MaybeUninit::zeroed`] for examples of correct and incorrect
+    /// usage of this method.
+    ///
+    /// [`Maybeuninit::zeroed`]: std::mem::MaybeUninit::zeroed
+    #[cfg(feature = "allocator_api")]
+    pub fn new_zeroed_in(len: usize, allocator: A) -> Self {
+        // SAFETY: All invariants are upheld by construction.
+        unsafe { Self::new(0, len, Allocation::allocate_zeroed_in(len, &allocator), allocator) }
+    }
+
+    /// Constructs a new `SliceRwLock` with uninitialized contents in the provided allocator,
+    /// returning an error if the allocation fails.
+    #[cfg(feature = "allocator_api")]
+    pub fn try_new_uninit_in(len: usize, allocator: A) -> Result<Self, AllocError> {
+        // SAFETY: All invariants are upheld by construction.
+        Allocation::try_allocate_uninit_in(len, &allocator).map(|ptr| unsafe { Self::new(0, len, ptr, allocator) })
+    }
+
+    /// Constructs a new `SliceRwLock` with uninitialized contents,
+    /// with the memory being filled with `0` bytes, in the provided allocator,
+    /// returning an error if the allocation fails.
+    ///
+    /// See [`MaybeUninit::zeroed`] for examples of correct and incorrect
+    /// usage of this method.
+    ///
+    /// [`Maybeuninit::zeroed`]: std::mem::MaybeUninit::zeroed
+    #[cfg(feature = "allocator_api")]
+    pub fn try_new_zeroed_in(len: usize, allocator: A) -> Result<Self, AllocError> {
+        // SAFETY: All invariants are upheld by construction.
+        Allocation::try_allocate_zeroed_in(len, &allocator).map(|ptr| unsafe { Self::new(0, len, ptr, allocator) })
+    }
+
     /// Converts to `SliceRwLock<T, A>`.
     ///
     /// # Safety

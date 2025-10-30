@@ -1,10 +1,13 @@
 use super::{read_all::ArrayRwLockReadAllGuard, write::ArrayRwLockWriteGuard, write_all::ArrayRwLockWriteAllGuard};
-use crate::inner::{LockState, alloc::Allocation};
+use crate::{
+    inner::{LockState, alloc::Allocation},
+    slice::lock::SliceRwLock,
+};
 use std::{
     alloc::{Allocator, Global},
     fmt::{self, Debug, Formatter},
     marker::PhantomData,
-    mem::{self, MaybeUninit},
+    mem::{self, ManuallyDrop, MaybeUninit},
     panic::{RefUnwindSafe, UnwindSafe},
     process,
     ptr::NonNull,
@@ -55,6 +58,33 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
         }
         // SAFETY: User-upheld invariants.
         unsafe { Self::new_not_incremented(start, allocation, allocator) }
+    }
+
+    /// Returns a lock to the entire slice wrapped in `Ok` if `self` is the only
+    /// entity guarding the slice. Otherwise, returns `Err` containing the original lock.
+    pub fn into_all(self) -> Result<SliceRwLock<T, A>, Self> {
+        // SAFETY: By construction, `allocation` points to live amd valid data.
+        if unsafe {
+            Allocation::get_metadata_disjoint(self.inner.allocation)
+                .state
+                .get_counter()
+        } == 1
+        {
+            let orig = ManuallyDrop::new(self);
+            Ok(unsafe {
+                // SAFETY: All invariants are upheld by construction.
+                SliceRwLock::new_not_incremented(
+                    0,
+                    // SAFETY: By construction, `allocation` points to live amd valid data.
+                    Allocation::len(orig.inner.allocation),
+                    orig.inner.allocation,
+                    // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                    (&raw const orig.allocator).read(),
+                )
+            })
+        } else {
+            Err(self)
+        }
     }
 
     /// Locks the allocation guarded by this 'ArrayRwLock' with shared global read access, blocking

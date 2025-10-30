@@ -94,7 +94,7 @@ where
             let guard = unsafe {
                 // SAFETY: The guard is dropped after the loop.
                 PanicWriteGuard::new(
-                    // By construction, `allocation` points to live and valid data.
+                    // SAFETY: By construction, `allocation` points to live and valid data.
                     &Allocation::get_metadata_disjoint(self.allocation).lock,
                 )
             };
@@ -161,7 +161,7 @@ where
             let guard = unsafe {
                 // SAFETY: The guard is dropped after the loop.
                 PanicWriteGuard::new(
-                    // By construction, `allocation` points to live and valid data.
+                    // SAFETY: By construction, `allocation` points to live and valid data.
                     &Allocation::get_metadata_disjoint(self.allocation).lock,
                 )
             };
