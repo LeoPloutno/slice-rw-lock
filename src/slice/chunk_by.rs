@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::{lock::SliceRwLock, panic_guard::PanicWriteGuard};
-use crate::inner::{self, alloc::Allocation};
+use crate::inner::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to (non-overlapping) chunks separated by a predicate.
 ///

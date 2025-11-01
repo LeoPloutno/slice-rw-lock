@@ -1,6 +1,6 @@
 use super::{read_all::ElemRwLockReadAllGuard, write::ElemRwLockWriteGuard, write_all::ElemRwLockWriteAllGuard};
 use crate::{
-    inner::{LockState, alloc::Allocation},
+    inner::{Allocation, State},
     slice::lock::SliceRwLock,
 };
 use std::{
@@ -19,6 +19,49 @@ pub(super) struct InnerElemRwLock<T> {
     pub(super) allocation: NonNull<Allocation<T>>,
 }
 
+/// A reader-writer lock guarding an element of a slice.
+///
+/// This lock gives exclusive subfield write access to a single element of the underlying slice.
+/// It can also give global read and write accesses to the slice.
+///
+/// # Examples
+///
+/// Mutate an element in a single-threaded environment:
+/// ```
+/// # use slice_rw_lock::SliceRwLock;
+/// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+/// let (mut first_elem, slice) = slice.split_first().unwrap();
+///
+/// let mut guard = first_elem.write().unwrap();
+/// *guard = 12;
+/// drop(guard);
+///
+/// assert_eq!(&*slice.read_all().unwrap(), &[12, 1, 2]);
+/// ```
+///
+/// Mutate two elements in parallel without blocking:
+/// ```
+/// # use slice_rw_lock::SliceRwLock;
+/// # use std::thread;
+/// let slice = SliceRwLock::from_vec(vec![0, 1]);
+/// let (mut first_elem, slice) = slice.split_first().unwrap();
+/// let (mut second_elem, slice) = slice.split_first().unwrap();
+///
+/// let handle = thread::spawn(move || {
+///     // No global access is acquired elsewhere - cannot fail.
+///     let not_blocked = first_elem.try_write();
+///     assert!(not_blocked.is_ok());
+///     *not_blocked.unwrap() = 24;
+/// });
+///
+/// let mut guard = second_elem.write().unwrap();
+/// *guard = 12;
+///
+/// handle.join().unwrap();
+/// drop(guard);
+///
+/// assert_eq!(&*slice.read_all().unwrap(), &[12, 24]);
+/// ```
 #[clippy::has_significant_drop]
 pub struct ElemRwLock<T, A: Allocator = Global> {
     pub(super) inner: InnerElemRwLock<T>,
@@ -29,6 +72,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation` without incrementing the reference counter.
     ///
     /// # Safety
+    ///
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `idx` must index an element inside the array pointed to by `allocation`.
     /// * The reference counter must not be zero when this function is called.
@@ -43,6 +87,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation`. Atomically increments the reference counter.
     ///
     /// # Safety
+    ///
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `idx` must index an element inside the array pointed to by `allocation`.
     pub(crate) unsafe fn new(idx: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
@@ -50,7 +95,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
             Allocation::get_metadata_disjoint(allocation)
                 .state
                 .fetch_increment_counter_unchecked(Ordering::Release)
-        } == LockState::MAX_COUNT
+        } == State::MAX_COUNT
         {
             process::abort();
         }
@@ -60,6 +105,21 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
 
     /// Returns a lock to the entire slice wrapped in `Ok` if `self` is the only
     /// entity guarding the slice. Otherwise, returns `Err` containing the original lock.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    ///
+    /// let (first_elem, slice) = slice.split_first().unwrap();
+    /// let not_all = first_elem.into_all();
+    /// assert!(not_all.is_err());
+    ///
+    /// let lock = not_all.unwrap_err();
+    /// drop(slice);
+    /// assert!(lock.into_all().is_ok());
+    /// ```
     pub fn into_all(self) -> Result<SliceRwLock<T, A>, Self> {
         // SAFETY: By construction, `allocation` points to live amd valid data.
         if unsafe {
@@ -104,6 +164,40 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// lock. The failure will occur immediately after the lock has been
     /// acquired. The acquired lock guard will be contained in the returned
     /// error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::{sync::Barrier, thread};
+    /// let barrier = Barrier::new(2);
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let (first_elem, mut slice) = slice.split_first().unwrap();
+    ///
+    /// thread::scope(|s| {
+    ///     let handle = s.spawn(|| {
+    ///         let mut guard = slice.write().unwrap();
+    ///         barrier.wait();
+    ///         guard[0] = 12;
+    ///         drop(guard);
+    ///         // Checked that the lock is not poisoned in the main thread.
+    ///         barrier.wait();
+    ///         let guard = slice.write().unwrap();
+    ///         panic!();
+    ///     });
+    ///
+    ///     // Created `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     // Block until `guard` is dropped in the spawned thread.
+    ///     let guard = first_elem.read_all();
+    ///     assert!(guard.is_ok());
+    ///     assert_eq!(&*guard.unwrap(), &[0, 12 ,2]);
+    ///     barrier.wait();
+    ///     // Panicked in the spawned thread.
+    ///     handle.join();
+    ///     assert!(first_elem.read_all().is_err());
+    /// });
+    /// ```
     pub fn read_all(&self) -> LockResult<ElemRwLockReadAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
@@ -138,6 +232,46 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// This function will return the [`WouldBlock`] error if the `ElemRwLock` could
     /// not be acquired because it was already locked exclusively.
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::{sync::{Barrier, TryLockError}, thread};
+    /// let barrier = Barrier::new(2);
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let (first_elem, mut slice) = slice.split_first().unwrap();
+    ///
+    /// thread::scope(|s| {
+    ///     let handle = s.spawn(|| {
+    ///         let mut guard = slice.write().unwrap();
+    ///         barrier.wait();
+    ///         // Checked that `read_all` would block in the main thread.
+    ///         barrier.wait();
+    ///         guard[0] = 12;
+    ///         drop(guard);
+    ///         barrier.wait();
+    ///         // Checked that `read_all` would no longer block in the main thread.
+    ///         barrier.wait();
+    ///         let guard = slice.write().unwrap();
+    ///         panic!();
+    ///     });
+    ///
+    ///     // Created `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     assert!(matches!(first_elem.try_read_all(), Err(TryLockError::WouldBlock)));
+    ///     barrier.wait();
+    ///     // Mutated the second element and dropped `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     let guard = first_elem.try_read_all();
+    ///     assert!(guard.is_ok());
+    ///     assert_eq!(&*guard.unwrap(), &[0, 12, 2]);
+    ///     barrier.wait();
+    ///     // Panicked in the spawned thread.
+    ///     handle.join();
+    ///     assert!(matches!(first_elem.try_read_all(), Err(TryLockError::Poisoned(_))));
+    /// });
+    /// ```
+    ///
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
     pub fn try_read_all(&self) -> TryLockResult<ElemRwLockReadAllGuard<'_, T>> {
@@ -170,6 +304,37 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// `ElemRwLock` is poisoned whenever a writer panics while holding an exclusive
     /// lock. An error will be returned when the lock is acquired. The acquired
     /// lock guard will be contained in the returned error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::{sync::Barrier, thread};
+    /// let barrier = Barrier::new(2);
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let (mut first_elem, slice) = slice.split_first().unwrap();
+    /// let (mut second_elem, slice) = slice.split_first().unwrap();
+    ///
+    /// thread::scope(|s| {
+    ///     let handle = s.spawn(|| {
+    ///         *first_elem.write().unwrap() = 12;
+    ///         barrier.wait();
+    ///         // Checked the slice contents in the main thread.
+    ///         barrier.wait();
+    ///         let guard = first_elem.write().unwrap();
+    ///         panic!();
+    ///     });
+    ///
+    ///     *second_elem.write().unwrap() = 24;
+    ///     // Mutated the first element in the spawned thread.
+    ///     barrier.wait();
+    ///     assert_eq!(&*slice.read_all().unwrap(), &[12, 24, 2]);
+    ///     barrier.wait();
+    ///     // Panicked in the spawned thread.
+    ///     handle.join();
+    ///     assert!(second_elem.write().is_err());
+    /// });
+    /// ```
     pub fn write(&mut self) -> LockResult<ElemRwLockWriteGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
@@ -204,6 +369,43 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// This function will return the [`WouldBlock`] error if the `ElemRwLock` could
     /// not be acquired because it was already locked.
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::{sync::{Barrier, TryLockError}, thread};
+    /// let barrier = Barrier::new(2);
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let (mut first_elem, mut slice) = slice.split_first().unwrap();
+    ///
+    /// thread::scope(|s| {
+    ///     let handle = s.spawn(|| {
+    ///         let guard = slice.read_all().unwrap();
+    ///         barrier.wait();
+    ///         // Checked that `write` would block in the main thread.
+    ///         barrier.wait();
+    ///         drop(guard);
+    ///         barrier.wait();
+    ///         // Checked that `write` would no longer block in the main thread.
+    ///         barrier.wait();
+    ///         let guard = slice.write().unwrap();
+    ///         panic!();
+    ///     });
+    ///
+    ///     // Created `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     assert!(matches!(first_elem.try_write(), Err(TryLockError::WouldBlock)));
+    ///     barrier.wait();
+    ///     // Dropped `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     assert!(first_elem.try_write().is_ok());
+    ///     barrier.wait();
+    ///     // Panicked in the spawned thread.
+    ///     handle.join();
+    ///     assert!(matches!(first_elem.try_write(), Err(TryLockError::Poisoned(_))));
+    /// });
+    /// ```
+    ///
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
     pub fn try_write(&mut self) -> TryLockResult<ElemRwLockWriteGuard<'_, T>> {
@@ -235,6 +437,40 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// `ElemRwLock` is poisoned whenever a writer panics while holding an exclusive
     /// lock. An error will be returned when the lock is acquired. The acquired
     /// lock guard will be contained in the returned error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::{sync::Barrier, thread};
+    /// let barrier = Barrier::new(2);
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let (mut first_elem, mut slice) = slice.split_first().unwrap();
+    ///
+    /// thread::scope(|s| {
+    ///     let handle = s.spawn(|| {
+    ///         let mut guard = slice.write().unwrap();
+    ///         barrier.wait();
+    ///         guard[0] = 12;
+    ///         drop(guard);
+    ///         // Checked that the lock is not poisoned in the main thread.
+    ///         barrier.wait();
+    ///         let guard = slice.write().unwrap();
+    ///         panic!();
+    ///     });
+    ///
+    ///     // Created `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     // Block until `guard` is dropped in the spawned thread.
+    ///     let guard = first_elem.write_all();
+    ///     assert!(guard.is_ok());
+    ///     assert_eq!(&mut *guard.unwrap(), &mut [0, 12 ,2]);
+    ///     barrier.wait();
+    ///     // Panicked in the spawned thread.
+    ///     handle.join();
+    ///     assert!(first_elem.write_all().is_err());
+    /// });
+    /// ```
     pub fn write_all(&mut self) -> LockResult<ElemRwLockWriteAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
@@ -269,6 +505,46 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// This function will return the [`WouldBlock`] error if the `ElemRwLock` could
     /// not be acquired because it was already locked.
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::{sync::{Barrier, TryLockError}, thread};
+    /// let barrier = Barrier::new(2);
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let (mut first_elem, mut slice) = slice.split_first().unwrap();
+    ///
+    /// thread::scope(|s| {
+    ///     let handle = s.spawn(|| {
+    ///         let mut guard = slice.write().unwrap();
+    ///         barrier.wait();
+    ///         // Checked that `write_all` would block in the main thread.
+    ///         barrier.wait();
+    ///         guard[0] = 12;
+    ///         drop(guard);
+    ///         barrier.wait();
+    ///         // Checked that `write_all` would no longer block in the main thread.
+    ///         barrier.wait();
+    ///         let guard = slice.write().unwrap();
+    ///         panic!();
+    ///     });
+    ///
+    ///     // Created `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     assert!(matches!(first_elem.try_write_all(), Err(TryLockError::WouldBlock)));
+    ///     barrier.wait();
+    ///     // Mutated the second element and dropped `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     let guard = first_elem.try_write_all();
+    ///     assert!(guard.is_ok());
+    ///     assert_eq!(&mut *guard.unwrap(), &mut [0, 12, 2]);
+    ///     barrier.wait();
+    ///     // Panicked in the spawned thread.
+    ///     handle.join();
+    ///     assert!(matches!(first_elem.try_write_all(), Err(TryLockError::Poisoned(_))));
+    /// });
+    /// ```
+    ///
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
     pub fn try_write_all(&mut self) -> TryLockResult<ElemRwLockWriteAllGuard<'_, T>> {
@@ -291,6 +567,34 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// If another thread is active, the lock can still become poisoned at any
     /// time. You should not trust a `false` value for program correctness
     /// without additional synchronization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::{sync::Barrier, thread};
+    /// let barrier = Barrier::new(2);
+    /// let slice = SliceRwLock::from_vec(vec![0, 1 ,2]);
+    /// let (first_elem, mut slice) = slice.split_first().unwrap();
+    ///
+    /// let handle = thread::scope(|s| {
+    ///     let handle = s.spawn(|| {
+    ///         let guard = slice.write().unwrap();
+    ///         barrier.wait();
+    ///         // Checked that the lock is not poisoned in the main thread.
+    ///         barrier.wait();
+    ///         panic!()
+    ///     });
+    ///
+    ///     // Created `guard` in the spawned thread.
+    ///     barrier.wait();
+    ///     assert!(!first_elem.is_poisoned());
+    ///     barrier.wait();
+    ///     // Panicked in the spawned thread.
+    ///     handle.join();
+    ///     assert!(first_elem.is_poisoned());
+    /// });
+    /// ```
     #[inline]
     pub fn is_poisoned(&self) -> bool {
         // By construction, `allocation` points to live and valid data.
@@ -306,6 +610,27 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// elements are overwritten by known-good values, then the lock can be marked as un-poisoned. Or
     /// possibly, the elements could be inspected to determine if they are in a consistent state, and if
     /// so the poison is removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// # use std::thread;
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let (mut first_elem, mut slice) = slice.split_first().unwrap();
+    ///
+    /// thread::scope(|s| {
+    ///     s.spawn(|| {
+    ///         let guard = slice.write().unwrap();
+    ///         panic!();
+    ///     }).join();
+    ///
+    ///     assert!(first_elem.is_poisoned());
+    ///
+    ///     first_elem.clear_poison();
+    ///     assert!(!first_elem.is_poisoned());
+    /// });
+    /// ```
     #[inline]
     pub fn clear_poison(&self) {
         // By construction, `allocation` points to live and valid data.
@@ -327,6 +652,18 @@ impl<T, A: Allocator> ElemRwLock<MaybeUninit<T>, A> {
     /// causes immediate undefined behavior.
     ///
     /// [`MaybeUninit::assume_init`]: mem::MaybeUninit::assume_init
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// let slice = SliceRwLock::new_uninit(3);
+    /// let (mut first_elem, slice) = slice.split_first().unwrap();
+    ///
+    /// first_elem.write().unwrap().write(12);
+    /// // SAFETY: Initialized the element above.
+    /// let first_elem = unsafe { first_elem.assume_init() };
+    /// ```
     pub const unsafe fn assume_init(self) -> ElemRwLock<T, A> {
         // SAFETY: All fields of `self` are forgotten immediately after
         // reading them out of the pointers.

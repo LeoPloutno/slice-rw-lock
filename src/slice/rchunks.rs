@@ -8,7 +8,7 @@ use std::{
 };
 
 use super::lock::SliceRwLock;
-use crate::inner::{self, alloc::Allocation};
+use crate::inner::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to (non-overlapping) chunks (`chunk_size` elements at a
 /// time), starting at the end of the slice.

@@ -1,5 +1,5 @@
 use super::lock::InnerSliceRwLock;
-use crate::inner::alloc::Allocation;
+use crate::inner::Allocation;
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
@@ -67,7 +67,7 @@ unsafe impl<T: Sync> Sync for SliceRwLockWriteAllGuard<'_, T> {}
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
     use super::SliceRwLockWriteAllGuard;
-    use crate::inner::{Metadata, alloc::Allocation};
+    use crate::inner::{Allocation, Metadata};
     use std::{
         fmt::{self, Debug, Display},
         mem::ManuallyDrop,

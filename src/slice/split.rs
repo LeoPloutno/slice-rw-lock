@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use std::{
     alloc::{Allocator, Global},
     fmt::{self, Debug},
@@ -8,7 +9,7 @@ use std::{
 };
 
 use super::{lock::SliceRwLock, panic_guard::PanicWriteGuard};
-use crate::inner::{self, alloc::Allocation};
+use crate::inner::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to subslices separated by elements that match a predicate
 /// function.

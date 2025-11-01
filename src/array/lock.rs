@@ -1,6 +1,6 @@
 use super::{read_all::ArrayRwLockReadAllGuard, write::ArrayRwLockWriteGuard, write_all::ArrayRwLockWriteAllGuard};
 use crate::{
-    inner::{LockState, alloc::Allocation},
+    inner::{Allocation, State},
     slice::lock::SliceRwLock,
 };
 use std::{
@@ -52,7 +52,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
             Allocation::get_metadata_disjoint(allocation)
                 .state
                 .fetch_increment_counter_unchecked(Ordering::Release)
-        } == LockState::MAX_COUNT
+        } == State::MAX_COUNT
         {
             process::abort();
         }
@@ -84,6 +84,21 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
             })
         } else {
             Err(self)
+        }
+    }
+
+    /// Returns a lock to a slice containing the entire array.
+    pub fn into_slice(self) -> SliceRwLock<T, A> {
+        let orig = ManuallyDrop::new(self);
+        unsafe {
+            // SAFETY: All invariants are upheld by construction.
+            SliceRwLock::new_not_incremented(
+                orig.inner.start,
+                N,
+                orig.inner.allocation,
+                // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
+                (&orig.allocator as *const A).read(),
+            )
         }
     }
 

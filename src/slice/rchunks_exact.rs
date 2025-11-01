@@ -1,5 +1,5 @@
 use super::lock::SliceRwLock;
-use crate::inner::{self, alloc::Allocation};
+use crate::inner::{self, Allocation};
 use std::{
     alloc::{Allocator, Global},
     fmt::{self, Debug},

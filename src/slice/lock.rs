@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 use super::{
     array_chunks::ArrayChunks, chunk_by::ChunkBy, chunks::Chunks, chunks_exact::ChunksExact, iter::Iter,
     panic_guard::PanicWriteGuard, rarray_chunks::RArrayChunks, rchunks::RChunks, rchunks_exact::RChunksExact,
@@ -7,14 +8,12 @@ use super::{
 use crate::{
     array::lock::ArrayRwLock,
     elem::lock::ElemRwLock,
-    inner::{self, LockState, alloc::Allocation},
+    inner::{self, Allocation, InnerRwLock, State},
 };
 #[cfg(feature = "strip_trim_prefix_suffix")]
 use core::slice::SlicePattern;
-#[cfg(feature = "allocator_api")]
-use std::alloc::AllocError;
 use std::{
-    alloc::{Allocator, Global},
+    alloc::{AllocError, Allocator, Global},
     fmt::{self, Debug, Formatter},
     marker::PhantomData,
     mem::{self, ManuallyDrop, MaybeUninit},
@@ -42,6 +41,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation` without incrementing the reference counter.
     ///
     /// # Safety
+    /// 
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `start` must index an element inside the array pointed to by `allocation`.
     /// * `start + len` must either index an element of said array or point one element past its end.
@@ -62,6 +62,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation`. Atomically increments the reference counter.
     ///
     /// # Safety
+    /// 
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `start` must index an element inside the array pointed to by `allocation`.
     /// * `start + len` must either index an element of said array or point one element past its end.
@@ -70,7 +71,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
             Allocation::get_metadata_disjoint(allocation)
                 .state
                 .fetch_increment_counter_unchecked(Ordering::Release)
-        } == LockState::MAX_COUNT
+        } == State::MAX_COUNT
         {
             process::abort();
         }
@@ -80,6 +81,25 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
 
     /// Returns a lock to the entire slice wrapped in `Ok` if `self` is the only
     /// entity guarding the slice. Otherwise, returns `Err` containing the original lock.
+    ///
+    /// # Examples
+    /// 
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// let lock = SliceRwLock::from_vec(vec![0, 1, 2]);
+    ///
+    /// let all = lock.into_all();
+    /// assert!(all.is_ok());
+    ///
+    /// let lock = all.unwrap();
+    /// let (first_lock, tail_lock) = lock.split_first().unwrap();
+    /// let not_all = tail_lock.into_all();
+    /// assert!(not_all.is_err());
+    ///
+    /// let lock = not_all.unwrap_err();
+    /// drop(first_lock);
+    /// assert!(lock.into_all().is_ok());
+    /// ```
     pub fn into_all(mut self) -> Result<SliceRwLock<T, A>, Self> {
         // SAFETY: By construction, `allocation` points to live and valid data.
         if unsafe {
@@ -101,6 +121,20 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     ///
     /// If `N` is not exactly equal to the length of the slice guarded by `self`, then this method returns
     /// `Err` containing the original lock.
+    ///
+    /// # Examples
+    /// 
+    /// ```
+    /// # use slice_rw_lock::SliceRwLock;
+    /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
+    ///
+    /// let array = slice.into_array::<3>();
+    /// assert!(array.is_ok());
+    ///
+    /// let slice = array.unwrap().into_slice();
+    /// let not_array = slice.into_array::<2>();
+    /// assert!(not_array.is_err());
+    /// ```
     #[cfg(feature = "slice_as_array")]
     pub fn into_array<const N: usize>(self) -> Result<ArrayRwLock<T, N, A>, Self> {
         if self.inner.len == N {
@@ -590,6 +624,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Once the oredicate returns `false`, the remaining elements are unlocked until the next iteration.
     ///
     /// # Panics
+    /// 
     /// If the predicate panics during evaluation, the panic is propagated.
     pub fn chunk_by<F>(self, pred: F) -> ChunkBy<T, F, A>
     where

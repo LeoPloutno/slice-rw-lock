@@ -1,5 +1,5 @@
 use super::lock::InnerElemRwLock;
-use crate::inner::alloc::Allocation;
+use crate::inner::Allocation;
 use std::{
     fmt::{self, Debug, Display},
     marker::PhantomData,
@@ -73,7 +73,7 @@ unsafe impl<T: Sync> Sync for ElemRwLockWriteGuard<'_, T> {}
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
     use super::ElemRwLockWriteGuard;
-    use crate::inner::{Metadata, alloc::Allocation};
+    use crate::inner::{Allocation, Metadata};
     use std::{
         fmt::{self, Debug, Display},
         mem::ManuallyDrop,

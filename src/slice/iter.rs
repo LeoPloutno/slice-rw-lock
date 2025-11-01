@@ -10,7 +10,7 @@ use std::{
 use super::lock::SliceRwLock;
 use crate::{
     ElemRwLock,
-    inner::{self, alloc::Allocation},
+    inner::{self, Allocation},
 };
 
 /// Element lock iterator.

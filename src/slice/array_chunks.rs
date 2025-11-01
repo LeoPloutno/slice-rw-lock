@@ -1,6 +1,6 @@
 use crate::{
     array::lock::ArrayRwLock,
-    inner::{self, alloc::Allocation},
+    inner::{self, Allocation},
     slice::lock::SliceRwLock,
 };
 use std::{
@@ -102,7 +102,7 @@ impl<T, const N: usize, A: Allocator + Clone> Iterator for ArrayChunks<T, N, A> 
     fn next(&mut self) -> Option<Self::Item> {
         debug_assert!(self.start <= self.end);
         debug_assert!(N != 0);
-        debug_assert!((self.end - self.start) % N == 0);
+        debug_assert!((self.end - self.start).is_multiple_of(N));
 
         if self.start < self.end {
             let start = self.start;
@@ -138,7 +138,7 @@ impl<T, const N: usize, A: Allocator + Clone> Iterator for ArrayChunks<T, N, A> 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         debug_assert!(self.start <= self.end);
         debug_assert!(N != 0);
-        debug_assert!((self.end - self.start) % N == 0);
+        debug_assert!((self.end - self.start).is_multiple_of(N));
 
         // SAFETY: By construction, `start < end`.
         let len = unsafe { self.end.unchecked_sub(self.start) };
@@ -169,7 +169,7 @@ impl<T, const N: usize, A: Allocator + Clone> DoubleEndedIterator for ArrayChunk
     fn next_back(&mut self) -> Option<Self::Item> {
         debug_assert!(self.start <= self.end);
         debug_assert!(N != 0);
-        debug_assert!((self.end - self.start) % N == 0);
+        debug_assert!((self.end - self.start).is_multiple_of(N));
 
         if self.start < self.end {
             unsafe {

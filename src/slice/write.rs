@@ -1,5 +1,5 @@
 use super::lock::InnerSliceRwLock;
-use crate::inner::alloc::Allocation;
+use crate::inner::Allocation;
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
@@ -75,7 +75,7 @@ pub(crate) mod mapped {
     };
 
     use super::SliceRwLockWriteGuard;
-    use crate::inner::{Metadata, alloc::Allocation};
+    use crate::inner::{Allocation, Metadata};
 
     impl<'a, T> SliceRwLockWriteGuard<'a, T> {
         /// Makes a [`MappedSliceRwLockWriteGuard`] for a component of the borrowed data, e.g.

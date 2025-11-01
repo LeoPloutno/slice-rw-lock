@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::{lock::SliceRwLock, panic_guard::PanicWriteGuard};
-use crate::inner::{self, alloc::Allocation};
+use crate::inner::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to subslices separated by elements that match a predicate
 /// function, limited to a given number of splits, starting from the end of the slice.
