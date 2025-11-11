@@ -7,10 +7,12 @@ edition = "2024"
 atomic-wait = "1.1"
 
 [features]
+default = ["allocator_api", "mapped_guards", "downgrade", "slice_as_array", "split_array", "split_as_slice", "split_once", "strip_trim_prefix_suffix"]
 allocator_api = []
 mapped_guards = []
 downgrade = []
 slice_as_array = []
+split_array = []
 split_as_slice = []
 split_once = []
 strip_trim_prefix_suffix = []

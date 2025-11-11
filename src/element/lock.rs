@@ -1,4 +1,6 @@
-use super::{read_all::ElemRwLockReadAllGuard, write::ElemRwLockWriteGuard, write_all::ElemRwLockWriteAllGuard};
+use super::{
+    read_all::ElementRwlockReadAllGuard, write::ElementRwlockWriteGuard, write_all::ElementRwlockWriteAllGuard,
+};
 use crate::{
     inner::{Allocation, State},
     slice::lock::SliceRwLock,
@@ -14,7 +16,7 @@ use std::{
     sync::{LockResult, PoisonError, TryLockError, TryLockResult, atomic::Ordering},
 };
 
-pub(super) struct InnerElemRwLock<T> {
+pub(super) struct InnerElementRwLock<T> {
     pub(super) idx: usize,
     pub(super) allocation: NonNull<Allocation<T>>,
 }
@@ -63,12 +65,12 @@ pub(super) struct InnerElemRwLock<T> {
 /// assert_eq!(&*slice.read_all().unwrap(), &[12, 24]);
 /// ```
 #[clippy::has_significant_drop]
-pub struct ElemRwLock<T, A: Allocator = Global> {
-    pub(super) inner: InnerElemRwLock<T>,
+pub struct ElementRwLock<T, A: Allocator = Global> {
+    pub(super) inner: InnerElementRwLock<T>,
     allocator: A,
 }
 
-impl<T, A: Allocator> ElemRwLock<T, A> {
+impl<T, A: Allocator> ElementRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation` without incrementing the reference counter.
     ///
     /// # Safety
@@ -77,10 +79,14 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     /// * `idx` must index an element inside the array pointed to by `allocation`.
     /// * The reference counter must not be zero when this function is called.
     #[inline]
-    pub(crate) unsafe fn new_not_incremented(idx: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
+    pub(crate) const unsafe fn new_not_incremented(
+        idx: usize,
+        allocation: NonNull<Allocation<T>>,
+        allocator: A,
+    ) -> Self {
         Self {
             allocator,
-            inner: InnerElemRwLock { idx, allocation },
+            inner: InnerElementRwLock { idx, allocation },
         }
     }
 
@@ -145,7 +151,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
         }
     }
 
-    /// Locks the allocation guarded by this 'ElemRwLock' with shared global read access, blocking
+    /// Locks the allocation guarded by this 'ElementRwlock' with shared global read access, blocking
     /// the current thread until it can be acquired.
     ///
     /// The calling thread will be blocked until there are no more subfield nor global writers which
@@ -159,8 +165,8 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// # Errors
     ///
-    /// This function will return an error if the `ElemRwLock` is poisoned. An
-    /// `ElemRwLock` is poisoned whenever a writer panics while holding an exclusive
+    /// This function will return an error if the `ElementRwlock` is poisoned. An
+    /// `ElementRwlock` is poisoned whenever a writer panics while holding an exclusive
     /// lock. The failure will occur immediately after the lock has been
     /// acquired. The acquired lock guard will be contained in the returned
     /// error.
@@ -198,11 +204,11 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///     assert!(first_elem.read_all().is_err());
     /// });
     /// ```
-    pub fn read_all(&self) -> LockResult<ElemRwLockReadAllGuard<'_, T>> {
+    pub fn read_all(&self) -> LockResult<ElementRwlockReadAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         metadata.lock.read_all();
-        let guard = ElemRwLockReadAllGuard(&self.inner, PhantomData);
+        let guard = ElementRwlockReadAllGuard(&self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
         } else {
@@ -210,7 +216,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
         }
     }
 
-    /// Attempts to acquire this `ElemRwLock` with shared global read access.
+    /// Attempts to acquire this `ElementRwlock` with shared global read access.
     ///
     /// If the access could not be granted at this time, then `Err` is returned.
     /// Otherwise, an RAII guard is returned which will release the shared access
@@ -223,13 +229,13 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// # Errors
     ///
-    /// This function will return the [`Poisoned`] error if the `ElemRwLock` is
-    /// poisoned. An `ElemRwLock` is poisoned whenever a writer panics while holding
+    /// This function will return the [`Poisoned`] error if the `ElementRwlock` is
+    /// poisoned. An `ElementRwlock` is poisoned whenever a writer panics while holding
     /// an exclusive lock. `Poisoned` will only be returned if the lock would
     /// have otherwise been acquired. An acquired lock guard will be contained
     /// in the returned error.
     ///
-    /// This function will return the [`WouldBlock`] error if the `ElemRwLock` could
+    /// This function will return the [`WouldBlock`] error if the `ElementRwlock` could
     /// not be acquired because it was already locked exclusively.
     ///
     /// # Examples
@@ -274,11 +280,11 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
-    pub fn try_read_all(&self) -> TryLockResult<ElemRwLockReadAllGuard<'_, T>> {
+    pub fn try_read_all(&self) -> TryLockResult<ElementRwlockReadAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         if metadata.lock.try_read_all() {
-            let guard = ElemRwLockReadAllGuard(&self.inner, PhantomData);
+            let guard = ElementRwlockReadAllGuard(&self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
             } else {
@@ -289,7 +295,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
         }
     }
 
-    /// Locks the element guarded by this `ElemRwLock` with exclusive subfiield write access, blocking the current
+    /// Locks the element guarded by this `ElementRwlock` with exclusive subfiield write access, blocking the current
     /// thread until it can be acquired.
     ///
     /// This function will not return while a global writer or any readers
@@ -300,8 +306,8 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// # Errors
     ///
-    /// This function will return an error if the `ElemRwLock` is poisoned. An
-    /// `ElemRwLock` is poisoned whenever a writer panics while holding an exclusive
+    /// This function will return an error if the `ElementRwlock` is poisoned. An
+    /// `ElementRwlock` is poisoned whenever a writer panics while holding an exclusive
     /// lock. An error will be returned when the lock is acquired. The acquired
     /// lock guard will be contained in the returned error.
     ///
@@ -335,11 +341,11 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///     assert!(second_elem.write().is_err());
     /// });
     /// ```
-    pub fn write(&mut self) -> LockResult<ElemRwLockWriteGuard<'_, T>> {
+    pub fn write(&mut self) -> LockResult<ElementRwlockWriteGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         metadata.lock.write();
-        let guard = ElemRwLockWriteGuard(&mut self.inner, PhantomData);
+        let guard = ElementRwlockWriteGuard(&mut self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
         } else {
@@ -347,7 +353,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
         }
     }
 
-    /// Attempts to lock this `ElemRwLock` with exclusive subfield write access.
+    /// Attempts to lock this `ElementRwlock` with exclusive subfield write access.
     ///
     /// If the lock could not be acquired at this time, then `Err` is returned.
     /// Otherwise, an RAII guard is returned which will release the lock when
@@ -360,13 +366,13 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// # Errors
     ///
-    /// This function will return the [`Poisoned`] error if the `ElemRwLock` is
-    /// poisoned. An `ElemRwLock` is poisoned whenever a writer panics while holding
+    /// This function will return the [`Poisoned`] error if the `ElementRwlock` is
+    /// poisoned. An `ElementRwlock` is poisoned whenever a writer panics while holding
     /// an exclusive lock. `Poisoned` will only be returned if the lock would
     /// have otherwise been acquired. An acquired lock guard will be contained
     /// in the returned error.
     ///
-    /// This function will return the [`WouldBlock`] error if the `ElemRwLock` could
+    /// This function will return the [`WouldBlock`] error if the `ElementRwlock` could
     /// not be acquired because it was already locked.
     ///
     /// # Examples
@@ -408,11 +414,11 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
-    pub fn try_write(&mut self) -> TryLockResult<ElemRwLockWriteGuard<'_, T>> {
+    pub fn try_write(&mut self) -> TryLockResult<ElementRwlockWriteGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         if metadata.lock.try_write() {
-            let guard = ElemRwLockWriteGuard(&mut self.inner, PhantomData);
+            let guard = ElementRwlockWriteGuard(&mut self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
             } else {
@@ -423,7 +429,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
         }
     }
 
-    /// Locks the allocation guarded by this `ElemRwLock` with exclusive global write access, blocking the current
+    /// Locks the allocation guarded by this `ElementRwlock` with exclusive global write access, blocking the current
     /// thread until it can be acquired.
     ///
     /// This function will not return while other writers or other readers
@@ -433,8 +439,8 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// # Errors
     ///
-    /// This function will return an error if the `ElemRwLock` is poisoned. An
-    /// `ElemRwLock` is poisoned whenever a writer panics while holding an exclusive
+    /// This function will return an error if the `ElementRwlock` is poisoned. An
+    /// `ElementRwlock` is poisoned whenever a writer panics while holding an exclusive
     /// lock. An error will be returned when the lock is acquired. The acquired
     /// lock guard will be contained in the returned error.
     ///
@@ -471,11 +477,11 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///     assert!(first_elem.write_all().is_err());
     /// });
     /// ```
-    pub fn write_all(&mut self) -> LockResult<ElemRwLockWriteAllGuard<'_, T>> {
+    pub fn write_all(&mut self) -> LockResult<ElementRwlockWriteAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         metadata.lock.write_all();
-        let guard = ElemRwLockWriteAllGuard(&mut self.inner, PhantomData);
+        let guard = ElementRwlockWriteAllGuard(&mut self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
         } else {
@@ -483,7 +489,7 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
         }
     }
 
-    /// Attempts to lock this `ElemRwLock` with exclusive global write access.
+    /// Attempts to lock this `ElementRwlock` with exclusive global write access.
     ///
     /// If the lock could not be acquired at this time, then `Err` is returned.
     /// Otherwise, an RAII guard is returned which will release the lock when
@@ -496,13 +502,13 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// # Errors
     ///
-    /// This function will return the [`Poisoned`] error if the `ElemRwLock` is
-    /// poisoned. An `ElemRwLock` is poisoned whenever a writer panics while holding
+    /// This function will return the [`Poisoned`] error if the `ElementRwlock` is
+    /// poisoned. An `ElementRwlock` is poisoned whenever a writer panics while holding
     /// an exclusive lock. `Poisoned` will only be returned if the lock would
     /// have otherwise been acquired. An acquired lock guard will be contained
     /// in the returned error.
     ///
-    /// This function will return the [`WouldBlock`] error if the `ElemRwLock` could
+    /// This function will return the [`WouldBlock`] error if the `ElementRwlock` could
     /// not be acquired because it was already locked.
     ///
     /// # Examples
@@ -547,11 +553,11 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     ///
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
-    pub fn try_write_all(&mut self) -> TryLockResult<ElemRwLockWriteAllGuard<'_, T>> {
+    pub fn try_write_all(&mut self) -> TryLockResult<ElementRwlockWriteAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
         if metadata.lock.try_write_all() {
-            let guard = ElemRwLockWriteAllGuard(&mut self.inner, PhantomData);
+            let guard = ElementRwlockWriteAllGuard(&mut self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
             } else {
@@ -640,8 +646,8 @@ impl<T, A: Allocator> ElemRwLock<T, A> {
     }
 }
 
-impl<T, A: Allocator> ElemRwLock<MaybeUninit<T>, A> {
-    /// Converts to `ElemRwLock<T, A>`.
+impl<T, A: Allocator> ElementRwLock<MaybeUninit<T>, A> {
+    /// Converts to `ElementRwlock<T, A>`.
     ///
     /// # Safety
     ///
@@ -664,7 +670,7 @@ impl<T, A: Allocator> ElemRwLock<MaybeUninit<T>, A> {
     /// // SAFETY: Initialized the element above.
     /// let first_elem = unsafe { first_elem.assume_init() };
     /// ```
-    pub const unsafe fn assume_init(self) -> ElemRwLock<T, A> {
+    pub const unsafe fn assume_init(self) -> ElementRwLock<T, A> {
         // SAFETY: All fields of `self` are forgotten immediately after
         // reading them out of the pointers.
         let allocator = unsafe { (&raw const self.allocator).read() };
@@ -672,9 +678,9 @@ impl<T, A: Allocator> ElemRwLock<MaybeUninit<T>, A> {
         mem::forget(self);
 
         let (ptr, len) = inner.allocation.to_raw_parts();
-        ElemRwLock {
+        ElementRwLock {
             allocator,
-            inner: InnerElemRwLock {
+            inner: InnerElementRwLock {
                 idx: inner.idx,
                 allocation: NonNull::from_raw_parts(ptr, len),
             },
@@ -682,7 +688,7 @@ impl<T, A: Allocator> ElemRwLock<MaybeUninit<T>, A> {
     }
 }
 
-impl<T, A: Allocator> Drop for ElemRwLock<T, A> {
+impl<T, A: Allocator> Drop for ElementRwLock<T, A> {
     fn drop(&mut self) {
         // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
         // The existance of `self` guarantees that the counter is at least 1.
@@ -693,9 +699,9 @@ impl<T, A: Allocator> Drop for ElemRwLock<T, A> {
     }
 }
 
-impl<T: Debug, A: Allocator> Debug for ElemRwLock<T, A> {
+impl<T: Debug, A: Allocator> Debug for ElementRwLock<T, A> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_struct("ElemRwLock");
+        let mut d = f.debug_struct("ElementRwlock");
         match self.try_read_all() {
             Ok(guard) => {
                 d.field("data", &&*guard);
@@ -713,8 +719,8 @@ impl<T: Debug, A: Allocator> Debug for ElemRwLock<T, A> {
     }
 }
 
-unsafe impl<T: Send + Sync, A: Allocator> Send for ElemRwLock<T, A> {}
+unsafe impl<T: Send + Sync, A: Allocator> Send for ElementRwLock<T, A> {}
 
-impl<T, A: Allocator> RefUnwindSafe for ElemRwLock<T, A> {}
+impl<T, A: Allocator> RefUnwindSafe for ElementRwLock<T, A> {}
 
-impl<T, A: Allocator> UnwindSafe for ElemRwLock<T, A> {}
+impl<T, A: Allocator> UnwindSafe for ElementRwLock<T, A> {}

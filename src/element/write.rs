@@ -1,4 +1,4 @@
-use super::lock::InnerElemRwLock;
+use super::lock::InnerElementRwLock;
 use crate::inner::Allocation;
 use std::{
     fmt::{self, Debug, Display},
@@ -11,19 +11,19 @@ use std::{
 /// dropped.
 ///
 /// This structure is created by the [`write`] and [`try_write`] methods on
-/// [`ElemRwLock`].
+/// [`ElementRwlock`].
 ///
-/// [`ElemRwLock`]: super::lock::ElemRwLock
-/// [`write`]: super::lock::ElemRwLock::write
-/// [`try_write`]: super::lock::ElemRwLock::try_write
-#[must_use = "if unused the ElemRwLock will immediately unlock"]
+/// [`ElementRwlock`]: super::lock::ElementRwlock
+/// [`write`]: super::lock::ElementRwlock::write
+/// [`try_write`]: super::lock::ElementRwlock::try_write
+#[must_use = "if unused the ElementRwlock will immediately unlock"]
 #[clippy::has_significant_drop]
-pub struct ElemRwLockWriteGuard<'a, T>(
-    pub(super) &'a mut InnerElemRwLock<T>,
+pub struct ElementRwlockWriteGuard<'a, T>(
+    pub(super) &'a mut InnerElementRwLock<T>,
     /* For opting-out of `Send` */ pub(super) PhantomData<*const ()>,
 );
 
-impl<T> Deref for ElemRwLockWriteGuard<'_, T> {
+impl<T> Deref for ElementRwlockWriteGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -33,7 +33,7 @@ impl<T> Deref for ElemRwLockWriteGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for ElemRwLockWriteGuard<'_, T> {
+impl<T> DerefMut for ElementRwlockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: By construction `allocation` points to live and valid data.
         // Aliasing rules are protected by synchronization.
@@ -41,7 +41,7 @@ impl<T> DerefMut for ElemRwLockWriteGuard<'_, T> {
     }
 }
 
-impl<T> Drop for ElemRwLockWriteGuard<'_, T> {
+impl<T> Drop for ElementRwlockWriteGuard<'_, T> {
     fn drop(&mut self) {
         // SAFETY: By construction `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.0.allocation) };
@@ -56,23 +56,23 @@ impl<T> Drop for ElemRwLockWriteGuard<'_, T> {
     }
 }
 
-impl<T: Debug> Debug for ElemRwLockWriteGuard<'_, T> {
+impl<T: Debug> Debug for ElementRwlockWriteGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
 
-impl<T: Display> Display for ElemRwLockWriteGuard<'_, T> {
+impl<T: Display> Display for ElementRwlockWriteGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
 
-unsafe impl<T: Sync> Sync for ElemRwLockWriteGuard<'_, T> {}
+unsafe impl<T: Sync> Sync for ElementRwlockWriteGuard<'_, T> {}
 
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
-    use super::ElemRwLockWriteGuard;
+    use super::ElementRwlockWriteGuard;
     use crate::inner::{Allocation, Metadata};
     use std::{
         fmt::{self, Debug, Display},
@@ -86,32 +86,32 @@ pub(crate) mod mapped {
     /// dropped, which can point to a subfield of the protected data.
     ///
     /// This structure is created by the [`map`] and [`filter_map`] methods
-    /// on [`ElemRwLockWriteGuard`].
+    /// on [`ElementRwlockWriteGuard`].
     ///
-    /// [`map`]: super::ElemRwLockWriteGuard::map
-    /// [`filter_map`]: super::ElemRwLockWriteGuard::filter_map
-    #[must_use = "if unused the ElemRwLock will immediately unlock"]
+    /// [`map`]: super::ElementRwlockWriteGuard::map
+    /// [`filter_map`]: super::ElementRwlockWriteGuard::filter_map
+    #[must_use = "if unused the ElementRwlock will immediately unlock"]
     #[clippy::has_significant_drop]
-    pub struct MappedElemRwLockWriteGuard<'a, T: ?Sized + 'a> {
+    pub struct MappedElementRwlockWriteGuard<'a, T: ?Sized + 'a> {
         lock: &'a Metadata,
         data: NonNull<T>,
     }
 
-    impl<'a, T> ElemRwLockWriteGuard<'a, T> {
-        /// Makes a [`MappedElemRwLockWriteGuard`] for a component of the borrowed data, e.g.
+    impl<'a, T> ElementRwlockWriteGuard<'a, T> {
+        /// Makes a [`MappedElementRwlockWriteGuard`] for a component of the borrowed data, e.g.
         /// an enum variant.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ElementRwlock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `ElemRwLockWriteGuard::map(...)`. A method would interfere with methods of
-        /// the same name on the contents of the `ElemRwLockWriteGuard` used through
+        /// `ElementRwlockWriteGuard::map(...)`. A method would interfere with methods of
+        /// the same name on the contents of the `ElementRwlockWriteGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn map<U, F>(orig: Self, f: F) -> MappedElemRwLockWriteGuard<'a, U>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ElementRwlock will be poisoned.
+        pub fn map<U, F>(orig: Self, f: F) -> MappedElementRwlockWriteGuard<'a, U>
         where
             F: FnOnce(&mut T) -> &mut U,
             U: ?Sized,
@@ -119,28 +119,28 @@ pub(crate) mod mapped {
             let orig = ManuallyDrop::new(orig);
             // SAFETY: All invariants are upheld by construction.
             unsafe {
-                MappedElemRwLockWriteGuard {
+                MappedElementRwlockWriteGuard {
                     lock: Allocation::get_metadata_disjoint(orig.0.allocation),
                     data: NonNull::from_mut(f(Allocation::get_elem_mut_disjoint(orig.0.allocation, orig.0.idx))),
                 }
             }
         }
 
-        /// Makes a [`MappedElemRwLockWriteGuard`] for a component of the borrowed data. The
+        /// Makes a [`MappedElementRwlockWriteGuard`] for a component of the borrowed data. The
         /// original guard is returned as an `Err(...)` if the closure returns
         /// `None`.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ElementRwlock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `ElemRwLockWriteGuard::filter_map(...)`. A method would interfere with methods
-        /// of the same name on the contents of the `ElemRwLockWriteGuard` used through
+        /// `ElementRwlockWriteGuard::filter_map(...)`. A method would interfere with methods
+        /// of the same name on the contents of the `ElementRwlockWriteGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedElemRwLockWriteGuard<'a, U>, Self>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ElementRwlock will be poisoned.
+        pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedElementRwlockWriteGuard<'a, U>, Self>
         where
             F: FnOnce(&mut T) -> Option<&mut U>,
             U: ?Sized,
@@ -149,7 +149,7 @@ pub(crate) mod mapped {
             match f(unsafe { Allocation::get_elem_mut_disjoint(orig.0.allocation, orig.0.idx) }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
-                    Ok(MappedElemRwLockWriteGuard {
+                    Ok(MappedElementRwlockWriteGuard {
                         // SAFETY: By construction, `allocation` points to live and valid data.
                         lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
                         data: NonNull::from_mut(data),
@@ -160,21 +160,21 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized + 'a> MappedElemRwLockWriteGuard<'a, T> {
-        /// Makes a [`MappedElemRwLockWriteGuard`] for a component of the borrowed data, e.g.
+    impl<'a, T: ?Sized + 'a> MappedElementRwlockWriteGuard<'a, T> {
+        /// Makes a [`MappedElementRwlockWriteGuard`] for a component of the borrowed data, e.g.
         /// an enum variant.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ElementRwlock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `MappedElemRwLockWriteGuard::map(...)`. A method would interfere with methods of
-        /// the same name on the contents of the `MappedElemRwLockWriteGuard` used through
+        /// `MappedElementRwlockWriteGuard::map(...)`. A method would interfere with methods of
+        /// the same name on the contents of the `MappedElementRwlockWriteGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn map<U, F>(mut orig: Self, f: F) -> MappedElemRwLockWriteGuard<'a, U>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ElementRwlock will be poisoned.
+        pub fn map<U, F>(mut orig: Self, f: F) -> MappedElementRwlockWriteGuard<'a, U>
         where
             F: FnOnce(&mut T) -> &mut U,
             U: ?Sized,
@@ -183,24 +183,24 @@ pub(crate) mod mapped {
             // synchronization provided by the lock.
             let data = NonNull::from_mut(f(unsafe { orig.data.as_mut() }));
             let orig = ManuallyDrop::new(orig);
-            MappedElemRwLockWriteGuard { lock: orig.lock, data }
+            MappedElementRwlockWriteGuard { lock: orig.lock, data }
         }
 
-        /// Makes a [`MappedElemRwLockWriteGuard`] for a component of the borrowed data. The
+        /// Makes a [`MappedElementRwlockWriteGuard`] for a component of the borrowed data. The
         /// original guard is returned as an `Err(...)` if the closure returns
         /// `None`.
         ///
-        /// The `ElemRwLock` is already locked for writing, so this cannot fail.
+        /// The `ElementRwlock` is already locked for writing, so this cannot fail.
         ///
         /// This is an associated function that needs to be used as
-        /// `MappedElemRwLockWriteGuard::filter_map(...)`. A method would interfere with methods
-        /// of the same name on the contents of the `MappedElemRwLockWriteGuard` used through
+        /// `MappedElementRwlockWriteGuard::filter_map(...)`. A method would interfere with methods
+        /// of the same name on the contents of the `MappedElementRwlockWriteGuard` used through
         /// `Deref`.
         ///
         /// # Panics
         ///
-        /// If the closure panics, the guard will be dropped (unlocked) and the ElemRwLock will be poisoned.
-        pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedElemRwLockWriteGuard<'a, U>, Self>
+        /// If the closure panics, the guard will be dropped (unlocked) and the ElementRwlock will be poisoned.
+        pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedElementRwlockWriteGuard<'a, U>, Self>
         where
             F: FnOnce(&mut T) -> Option<&mut U>,
             U: ?Sized,
@@ -210,7 +210,7 @@ pub(crate) mod mapped {
             match f(unsafe { orig.data.as_mut() }) {
                 Some(data) => {
                     let orig = ManuallyDrop::new(orig);
-                    Ok(MappedElemRwLockWriteGuard {
+                    Ok(MappedElementRwlockWriteGuard {
                         lock: orig.lock,
                         data: NonNull::from_mut(data),
                     })
@@ -220,7 +220,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized> Deref for MappedElemRwLockWriteGuard<'a, T> {
+    impl<'a, T: ?Sized> Deref for MappedElementRwlockWriteGuard<'a, T> {
         type Target = T;
 
         fn deref(&self) -> &Self::Target {
@@ -230,7 +230,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized + 'a> DerefMut for MappedElemRwLockWriteGuard<'a, T> {
+    impl<'a, T: ?Sized + 'a> DerefMut for MappedElementRwlockWriteGuard<'a, T> {
         fn deref_mut(&mut self) -> &mut Self::Target {
             // SAFETY: The only way to obtain a pointer to this pointee is to transform the only
             // guard protecting it via `map` or `filter_map`, which transfers ownership one-to-one.
@@ -238,7 +238,7 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: ?Sized + 'a> Drop for MappedElemRwLockWriteGuard<'a, T> {
+    impl<'a, T: ?Sized + 'a> Drop for MappedElementRwlockWriteGuard<'a, T> {
         fn drop(&mut self) {
             if thread::panicking() {
                 self.lock.state.poison();
@@ -251,17 +251,17 @@ pub(crate) mod mapped {
         }
     }
 
-    impl<'a, T: Debug + ?Sized + 'a> Debug for MappedElemRwLockWriteGuard<'a, T> {
+    impl<'a, T: Debug + ?Sized + 'a> Debug for MappedElementRwlockWriteGuard<'a, T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             (**self).fmt(f)
         }
     }
 
-    impl<'a, T: Display + ?Sized + 'a> Display for MappedElemRwLockWriteGuard<'a, T> {
+    impl<'a, T: Display + ?Sized + 'a> Display for MappedElementRwlockWriteGuard<'a, T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             (**self).fmt(f)
         }
     }
 
-    unsafe impl<'a, T: Sync + ?Sized + 'a> Sync for MappedElemRwLockWriteGuard<'a, T> {}
+    unsafe impl<'a, T: Sync + ?Sized + 'a> Sync for MappedElementRwlockWriteGuard<'a, T> {}
 }

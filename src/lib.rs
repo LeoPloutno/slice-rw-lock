@@ -27,17 +27,17 @@
 #![allow(dead_code)]
 
 mod array;
-mod elem;
+mod element;
 mod inner;
 mod slice;
 
 #[rustfmt::skip]
 pub use crate::{
-    elem::{
-        lock::ElemRwLock,
-        read_all::ElemRwLockReadAllGuard,
-        write::ElemRwLockWriteGuard,
-        write_all::ElemRwLockWriteAllGuard,
+    element::{
+        lock::ElementRwLock,
+        read_all::ElementRwlockReadAllGuard,
+        write::ElementRwlockWriteGuard,
+        write_all::ElementRwlockWriteAllGuard,
     },
     array::{
         lock::ArrayRwLock,
@@ -69,10 +69,10 @@ pub use crate::{
 #[cfg(feature = "mapped_guards")]
 #[rustfmt::skip]
 pub use crate::{
-    elem::{
-        read_all::mapped::MappedElemRwLockReadAllGuard,
-        write::mapped::MappedElemRwLockWriteGuard,
-        write_all::mapped::MappedElemRwLockWriteAllGuard,
+    element::{
+        read_all::mapped::MappedElementRwlockReadAllGuard,
+        write::mapped::MappedElementRwlockWriteGuard,
+        write_all::mapped::MappedElementRwlockWriteAllGuard,
     },
     array::{
         read_all::mapped::MappedArrayRwLockReadAllGuard,

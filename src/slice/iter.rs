@@ -9,7 +9,7 @@ use std::{
 
 use super::lock::SliceRwLock;
 use crate::{
-    ElemRwLock,
+    ElementRwLock,
     inner::{self, Allocation},
 };
 
@@ -84,7 +84,7 @@ impl<T, A: Allocator> Drop for Iter<T, A> {
 }
 
 impl<T, A: Allocator + Clone> Iterator for Iter<T, A> {
-    type Item = ElemRwLock<T, A>;
+    type Item = ElementRwLock<T, A>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -93,7 +93,7 @@ impl<T, A: Allocator + Clone> Iterator for Iter<T, A> {
                 // SAFETY: Checked above that `start < end`.
                 self.start = self.start.unchecked_add(1);
                 // SAFETY: All invariants are upheld by construction.
-                Some(ElemRwLock::new(start_old, self.allocation, self.allocator.clone()))
+                Some(ElementRwLock::new(start_old, self.allocation, self.allocator.clone()))
             }
         } else {
             inner::cold_path();
@@ -124,7 +124,7 @@ impl<T, A: Allocator + Clone> Iterator for Iter<T, A> {
                 // SAFETY: Checked above that `n < end - start`, which implies `start + n < end`.
                 self.start = self.start.unchecked_add(n.unchecked_add(1));
                 // SAFETY: All invariants are upheld by construction.
-                Some(ElemRwLock::new(start_old, self.allocation, self.allocator.clone()))
+                Some(ElementRwLock::new(start_old, self.allocation, self.allocator.clone()))
             }
         } else {
             self.start = self.end;
@@ -142,7 +142,7 @@ impl<T, A: Allocator + Clone> DoubleEndedIterator for Iter<T, A> {
                 // SAFETY: Checked above that `start < end`.
                 self.end = self.end.unchecked_sub(1);
                 // SAFETY: All invariants are upheld by construction.
-                Some(ElemRwLock::new(self.end, self.allocation, self.allocator.clone()))
+                Some(ElementRwLock::new(self.end, self.allocation, self.allocator.clone()))
             }
         } else {
             inner::cold_path();

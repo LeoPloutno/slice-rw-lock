@@ -7,18 +7,18 @@ use super::{
 };
 use crate::{
     array::lock::ArrayRwLock,
-    elem::lock::ElemRwLock,
+    element::lock::ElementRwLock,
     inner::{self, Allocation, InnerRwLock, State},
 };
 #[cfg(feature = "strip_trim_prefix_suffix")]
 use core::slice::SlicePattern;
 use std::{
-    alloc::{AllocError, Allocator, Global},
+    alloc::{AllocError, Allocator, Global, Layout},
     fmt::{self, Debug, Formatter},
     marker::PhantomData,
     mem::{self, ManuallyDrop, MaybeUninit},
     num::NonZeroUsize,
-    ops::{OneSidedRange, OneSidedRangeBound},
+    ops::{OneSidedRange, OneSidedRangeBound, Range},
     panic::{RefUnwindSafe, UnwindSafe},
     process,
     ptr::NonNull,
@@ -41,13 +41,13 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation` without incrementing the reference counter.
     ///
     /// # Safety
-    /// 
+    ///
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `start` must index an element inside the array pointed to by `allocation`.
     /// * `start + len` must either index an element of said array or point one element past its end.
     /// * The reference counter must not be zero when this function is called.
     #[inline]
-    pub(crate) unsafe fn new_not_incremented(
+    pub(crate) const unsafe fn new_not_incremented(
         start: usize,
         len: usize,
         allocation: NonNull<Allocation<T>>,
@@ -62,7 +62,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Creates a new lock to the underlying `allocation`. Atomically increments the reference counter.
     ///
     /// # Safety
-    /// 
+    ///
     /// * `allocation` must point to a live and valid instance of `Allocation<T>`.
     /// * `start` must index an element inside the array pointed to by `allocation`.
     /// * `start + len` must either index an element of said array or point one element past its end.
@@ -83,10 +83,10 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// entity guarding the slice. Otherwise, returns `Err` containing the original lock.
     ///
     /// # Examples
-    /// 
+    ///
     /// ```
     /// # use slice_rw_lock::SliceRwLock;
-    /// let lock = SliceRwLock::from_vec(vec![0, 1, 2]);
+    /// let lock: SliceRwLock = vec![0, 1, 2].into();
     ///
     /// let all = lock.into_all();
     /// assert!(all.is_ok());
@@ -101,16 +101,10 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// assert!(lock.into_all().is_ok());
     /// ```
     pub fn into_all(mut self) -> Result<SliceRwLock<T, A>, Self> {
-        // SAFETY: By construction, `allocation` points to live and valid data.
-        if unsafe {
-            Allocation::get_metadata_disjoint(self.inner.allocation)
-                .state
-                .get_counter()
-        } == 1
-        {
+        if self.is_all() {
             self.inner.start = 0;
             // SAFETY: By construction, `allocation` points to live and valid data.
-            self.inner.len = unsafe { Allocation::len(self.inner.allocation) };
+            self.inner.len = Allocation::len(self.inner.allocation);
             Ok(self)
         } else {
             Err(self)
@@ -123,7 +117,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// `Err` containing the original lock.
     ///
     /// # Examples
-    /// 
+    ///
     /// ```
     /// # use slice_rw_lock::SliceRwLock;
     /// let slice = SliceRwLock::from_vec(vec![0, 1, 2]);
@@ -136,21 +130,8 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// assert!(not_array.is_err());
     /// ```
     #[cfg(feature = "slice_as_array")]
-    pub fn into_array<const N: usize>(self) -> Result<ArrayRwLock<T, N, A>, Self> {
-        if self.inner.len == N {
-            let orig = ManuallyDrop::new(self);
-            Ok(unsafe {
-                // SAFETY: All invariants are upheld by construction.
-                ArrayRwLock::new_not_incremented(
-                    orig.inner.start,
-                    orig.inner.allocation,
-                    // SAFETY: The allocator is not accessed after this line and is forgotten at the end of this function.
-                    (&orig.allocator as *const A).read(),
-                )
-            })
-        } else {
-            Err(self)
-        }
+    pub const fn into_array<const N: usize>(self) -> Result<ArrayRwLock<T, N, A>, Self> {
+        self.into_array_internal()
     }
 
     /// Locks the allocation guarded by this 'SliceRwLock' with shared global read access, blocking
@@ -380,6 +361,35 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
         unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }
             .state
             .clear_poison();
+    }
+
+    /// Returns the number of elements in the subslice guarded by this lock.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.inner.len
+    }
+
+    /// Returns the number of elements in the whole slice guarded by this lock.
+    #[inline]
+    pub const fn len_all(&self) -> usize {
+        Allocation::len(self.inner.allocation)
+    }
+
+    /// Returns whether this lock is the only objject guarding the underlying slice.
+    #[inline]
+    pub fn is_all(&self) -> bool {
+        // SAFETY: By construction, `allocation` points to live and valid data.
+        unsafe { Allocation::is_exclusive(self.inner.allocation) }
+    }
+
+    /// Returns the range of indices of the subslice guarded by this lock.
+    #[inline]
+    pub const fn subslice_range(&self) -> Range<usize> {
+        Range {
+            start: self.inner.start,
+            // SAFETY: By construction, `start + len` points within or right outside the allocation.
+            end: unsafe { self.inner.start.unchecked_add(self.inner.len) },
+        }
     }
 
     /// Returns an iterator over the guarded slice.
@@ -624,7 +634,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// Once the oredicate returns `false`, the remaining elements are unlocked until the next iteration.
     ///
     /// # Panics
-    /// 
+    ///
     /// If the predicate panics during evaluation, the panic is propagated.
     pub fn chunk_by<F>(self, pred: F) -> ChunkBy<T, F, A>
     where
@@ -769,32 +779,8 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
 }
 
 impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
-    /// Converts a `Vec<T, A>` into a `SliceRwLock<T, A>`.
-    ///
-    /// This conversion allocates on the heap and moves the data.
-    pub fn from_vec(v: Vec<T, A>) -> Self {
-        let (ptr, len, capacity, allocator) = v.into_parts_with_alloc();
-        let ptr = ptr.cast::<MaybeUninit<T>>();
-        let _v = unsafe { Vec::from_parts_in(ptr, len, capacity, allocator.clone()) };
-        let ptr_reallocated = Allocation::<MaybeUninit<T>>::allocate_uninit_in(len, &allocator);
-        unsafe {
-            // SAFETY: Allocated above.
-            let slice_ptr_reallocated = Allocation::get_slice(ptr_reallocated);
-            // SAFETY: Both pointers point to live allocations produced by the same
-            // allocator, so the data cannot overlap.
-            slice_ptr_reallocated
-                .to_raw_parts()
-                .0
-                .cast()
-                .copy_from_nonoverlapping(ptr, len);
-            let (ptr, metadata) = ptr_reallocated.to_raw_parts();
-            // SAFETY: All invariants are upheld by construction.
-            Self::new(0, len, NonNull::from_raw_parts(ptr, metadata), allocator)
-        }
-    }
-
     /// Returns locks to the first and the rest of the slice guarded by `self`, or `Err` containing the original lock if it is empty.
-    pub fn split_first(mut self) -> Result<(ElemRwLock<T, A>, Self), Self> {
+    pub fn split_first(mut self) -> Result<(ElementRwLock<T, A>, Self), Self> {
         if self.inner.len > 0 {
             let start_old = self.inner.start;
             unsafe {
@@ -805,7 +791,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
 
                 Ok((
                     // SAFETY: By construction, `allocation` points to live and valid data.
-                    ElemRwLock::new(start_old, self.inner.allocation, self.allocator.clone()),
+                    ElementRwLock::new(start_old, self.inner.allocation, self.allocator.clone()),
                     self,
                 ))
             }
@@ -815,14 +801,14 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
     }
 
     /// Returns locks to the last and the rest of the slice guarded by `self`, or `Err` containing the original lock if it is empty.
-    pub fn split_last(mut self) -> Result<(ElemRwLock<T, A>, Self), Self> {
+    pub fn split_last(mut self) -> Result<(ElementRwLock<T, A>, Self), Self> {
         if self.inner.len > 0 {
             unsafe {
                 // SAFETY: Checked above that `len > 0`.
                 self.inner.len = self.inner.len.unchecked_sub(1);
                 Ok((
                     // SAFETY: By construction, `allocation` points to a live and valid data.
-                    ElemRwLock::new(
+                    ElementRwLock::new(
                         // SAFETY: By construction, `start + len` points within or right outside the allocation.
                         self.inner.start.unchecked_add(self.inner.len),
                         self.inner.allocation,
@@ -1264,7 +1250,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
     // to it.
     //
     // Returns `None` if the slice is empty.
-    pub fn split_off_first(&mut self) -> Option<ElemRwLock<T, A>> {
+    pub fn split_off_first(&mut self) -> Option<ElementRwLock<T, A>> {
         if self.inner.len >= 1 {
             let first = self.inner.start;
             unsafe {
@@ -1273,7 +1259,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
                 // SAFETY: Checked above that `1 <= len`.
                 self.inner.len = self.inner.len.unchecked_sub(1);
                 // SAFETY: All invariants are upheld by construction.
-                Some(ElemRwLock::new(first, self.inner.allocation, self.allocator.clone()))
+                Some(ElementRwLock::new(first, self.inner.allocation, self.allocator.clone()))
             }
         } else {
             None
@@ -1284,14 +1270,14 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
     // to it.
     //
     // Returns `None` if the slice is empty.
-    pub fn split_off_last(&mut self) -> Option<ElemRwLock<T, A>> {
+    pub fn split_off_last(&mut self) -> Option<ElementRwLock<T, A>> {
         if self.inner.len >= 1 {
             unsafe {
                 // Checked above that `1 <= len`.
                 self.inner.len = self.inner.len.unchecked_sub(1);
                 Some(
                     // SAFETY: All invariants are upheld by construction.
-                    ElemRwLock::new(
+                    ElementRwLock::new(
                         // SAFETY: Checked above that `1 <= len`, which implies `start + len - 1 >= start`.
                         self.inner.start.unchecked_add(self.inner.len),
                         self.inner.allocation,
@@ -1301,6 +1287,27 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
             }
         } else {
             None
+        }
+    }
+}
+
+impl<T, A: Allocator> SliceRwLock<T, A> {
+    #[inline]
+    pub(crate) const fn into_array_internal<const N: usize>(self) -> Result<ArrayRwLock<T, N, A>, Self> {
+        if self.inner.len == N {
+            Ok(unsafe {
+                // SAFETY: All invariants are upheld by construction.
+                let ret = ArrayRwLock::new_not_incremented(
+                    self.inner.start,
+                    self.inner.allocation,
+                    // SAFETY: The allocator is not accessed after this line and is forgotten below.
+                    (&self.allocator as *const A).read(),
+                );
+                mem::forget(self);
+                ret
+            })
+        } else {
+            Err(self)
         }
     }
 }
@@ -1380,7 +1387,8 @@ impl<T, A: Allocator> SliceRwLock<MaybeUninit<T>, A> {
         Allocation::try_allocate_zeroed_in(len, &allocator).map(|ptr| unsafe { Self::new(0, len, ptr, allocator) })
     }
 
-    /// Converts to `SliceRwLock<T, A>`.
+    /// Converts to `SliceRwLock<T, A>` wrapped in `Ok` if `self` is the only guard
+    /// to the slice. Otherwise returns `Err` containing the original lock.
     ///
     /// # Safety
     ///
@@ -1391,7 +1399,30 @@ impl<T, A: Allocator> SliceRwLock<MaybeUninit<T>, A> {
     /// causes immediate undefined behavior.
     ///
     /// [`MaybeUninit::assume_init`]: mem::MaybeUninit::assume_init
-    pub const unsafe fn assume_init(self) -> SliceRwLock<T, A> {
+    pub unsafe fn assume_init(self) -> Result<SliceRwLock<T, A>, Self> {
+        if self.is_all() {
+            // SAFETY: Checked above that `self` is the only guard to the allocation.
+            Ok(unsafe { self.assume_init_unchecked() })
+        } else {
+            Err(self)
+        }
+    }
+
+    /// Converts to `SliceRwLock<T, A>`, assuming the caller is the only lock guarding the allocation.
+    ///
+    /// # Safety
+    ///
+    /// As with [`MaybeUninit::assume_init`],
+    /// it is up to the caller to guarantee that the inner value
+    /// really is in an initialized state.
+    /// Calling this when the content is not yet fully initialized
+    /// causes immediate undefined behavior.
+    ///
+    /// Calling this while another entity guarding the slice exists
+    /// might lead to undefined behaviour when all guards are dropped.
+    ///
+    /// [`MaybeUninit::assume_init`]: mem::MaybeUninit::assume_init
+    pub const unsafe fn assume_init_unchecked(self) -> SliceRwLock<T, A> {
         // SAFETY: All fields of `self` are forgotten immediately after
         // reading them out of the pointers.
         let allocator = unsafe { (&raw const self.allocator).read() };
@@ -1447,3 +1478,53 @@ unsafe impl<T: Send + Sync, A: Allocator> Send for SliceRwLock<T, A> {}
 impl<T, A: Allocator> RefUnwindSafe for SliceRwLock<T, A> {}
 
 impl<T, A: Allocator> UnwindSafe for SliceRwLock<T, A> {}
+
+impl<T, const N: usize, A: Allocator> From<ArrayRwLock<T, N, A>> for SliceRwLock<T, A> {
+    /// Converts an `ArrayRwLock<T, A>` into a `SliceRwLock<T, A>`.
+    fn from(value: ArrayRwLock<T, N, A>) -> Self {
+        value.into_slice()
+    }
+}
+
+impl<T, A: Allocator> From<Box<[T], A>> for SliceRwLock<T, A> {
+    /// Converts a `Box<[T], A>` into a `SliceRwLock<T, A>`.
+    ///
+    /// This conversion allocates on the heap and moves the data.
+    fn from(value: Box<[T], A>) -> Self {
+        let (ptr, allocator) = Box::into_non_null_with_allocator(value);
+        let (ptr, len) = ptr.to_raw_parts();
+        let ptr = ptr.cast::<MaybeUninit<T>>();
+        let ptr_reallocated = Allocation::<MaybeUninit<T>>::allocate_uninit_in(len, &allocator);
+        unsafe {
+            // SAFETY: Allocated above.
+            let slice_ptr_reallocated = Allocation::get_slice(ptr_reallocated);
+            // SAFETY: Both pointers point to live allocations produced by the same
+            // allocator, so the data cannot overlap.
+            slice_ptr_reallocated
+                .to_raw_parts()
+                .0
+                .cast()
+                .copy_from_nonoverlapping(ptr, len);
+            // SAFETY: By construction, `ptr` points to an allocation produced by
+            // `allocator` with a layout of an array of length `len`.
+            allocator.deallocate(ptr.cast(), Layout::array::<T>(len).unwrap_unchecked());
+            let (ptr, metadata) = ptr_reallocated.to_raw_parts();
+            // SAFETY: All invariants are upheld by construction.
+            Self::new(0, len, NonNull::from_raw_parts(ptr, metadata), allocator)
+        }
+    }
+}
+
+impl<T, A: Allocator> From<Vec<T, A>> for SliceRwLock<T, A> {
+    /// Converts a `Vec<T, A>` into a `SliceRwLock<T, A>`.
+    ///
+    /// This conversion allocates on the heap and moves the data.
+    ///
+    /// # Note
+    ///
+    /// If the passed `Vec` is not fully populated (i.e., `len != cap`),
+    /// this operation will result in two reallocations.
+    fn from(value: Vec<T, A>) -> Self {
+        value.into_boxed_slice().into()
+    }
+}
