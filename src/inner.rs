@@ -2172,6 +2172,456 @@ mod full_rw_lock {
                     });
                 }
             }
+
+            mod benches {
+                use super::super::InnerRwLock;
+                use std::{
+                    mem::{self, MaybeUninit},
+                    sync::{
+                        Barrier,
+                        atomic::{AtomicU128, Ordering},
+                    },
+                    thread,
+                    time::Instant,
+                };
+
+                #[derive(Clone, Copy, Default)]
+                struct TimeTable<T> {
+                    read: T,
+                    read_all: T,
+                    write: T,
+                    write_all: T,
+                }
+
+                #[derive(Clone, Copy, Default)]
+                struct Statistic<T> {
+                    mean: T,
+                    std: T,
+                }
+
+                fn bench_template<const NTRIALS: usize, const NTHREADS: usize, FWorkers, FMain>(
+                    workers: FWorkers,
+                    main: FMain,
+                ) -> TimeTable<Statistic<f64>>
+                where
+                    FWorkers:
+                        Fn(&InnerRwLock, &Barrier, &Barrier, &AtomicU128, &Instant, &mut TimeTable<u128>, bool) + Sync,
+                    FMain: Fn(&InnerRwLock, &Barrier, &AtomicU128, &Instant),
+                {
+                    let lock = InnerRwLock::new();
+                    let barrier_all = Barrier::new(NTHREADS + 1);
+                    let barrier_workers = Barrier::new(NTHREADS);
+                    let instant = AtomicU128::new(0);
+                    let instant_start = Instant::now();
+
+                    let mut times = Box::<[[TimeTable<u128>; NTRIALS]]>::new_uninit_slice(NTHREADS);
+                    for thread_trials in times.iter_mut() {
+                        let thread_trials =
+                            unsafe { mem::transmute::<_, &mut [MaybeUninit<TimeTable<u128>>; NTRIALS]>(thread_trials) };
+                        thread_trials.fill(MaybeUninit::new(TimeTable::default()));
+                    }
+                    let mut times = unsafe { times.assume_init() };
+
+                    thread::scope(|s| {
+                        for (i, trial_times) in times.iter_mut().enumerate() {
+                            let lock = &lock;
+                            let barrier_all = &barrier_all;
+                            let barrier_workers = &barrier_workers;
+                            let instant = &instant;
+                            let instant_start = &instant_start;
+                            let workers = &workers;
+                            s.spawn(move || {
+                                for trial_time_table in trial_times.iter_mut() {
+                                    workers(
+                                        lock,
+                                        barrier_all,
+                                        barrier_workers,
+                                        instant,
+                                        instant_start,
+                                        trial_time_table,
+                                        i == 0,
+                                    )
+                                }
+                            });
+                        }
+
+                        for _ in 0..NTRIALS {
+                            main(&lock, &barrier_all, &instant, &instant_start);
+                        }
+                    });
+
+                    macro_rules! square {
+                        ($n:expr) => {{ $n * $n }};
+                    }
+
+                    let mut stats = TimeTable::<Statistic<f64>>::default();
+                    for thread_trials in times.iter() {
+                        for trial in thread_trials {
+                            stats.read.mean += trial.read as f64;
+                            stats.read.std += square!(trial.read) as f64;
+                            stats.read_all.mean += trial.read_all as f64;
+                            stats.read_all.std += square!(trial.read_all) as f64;
+                            stats.write.mean += trial.write as f64;
+                            stats.write.std += square!(trial.write) as f64;
+                            stats.write_all.mean += trial.write_all as f64;
+                            stats.write_all.std += square!(trial.write_all) as f64;
+                        }
+                    }
+                    let total_runs = const { NTHREADS * NTRIALS } as f64;
+                    stats.read.mean /= total_runs;
+                    stats.read.std = ((stats.read.std / total_runs - square!(stats.read.mean)) / total_runs).sqrt();
+                    stats.read_all.mean /= total_runs;
+                    stats.read_all.std =
+                        ((stats.read_all.std / total_runs - square!(stats.read_all.mean)) / total_runs).sqrt();
+                    stats.write.mean /= total_runs;
+                    stats.write.std = ((stats.write.std / total_runs - square!(stats.write.mean)) / total_runs).sqrt();
+                    stats.write_all.mean /= NTRIALS as f64;
+                    stats.write_all.std = ((stats.write_all.std / (NTRIALS as f64) - square!(stats.write_all.mean))
+                        / (NTRIALS as f64))
+                        .sqrt();
+                    stats
+                }
+
+                #[test]
+                fn all() {
+                    const NTRIALS: usize = 2;
+                    const NTHREADS: usize = 8;
+
+                    let read = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            let before = Instant::now();
+                            lock.read();
+                            time_table.read = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_workers.wait();
+                            // 3
+                            let before = Instant::now();
+                            lock.read_all();
+                            time_table.read_all = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 4
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_workers.wait();
+                            // 5
+                            let before = Instant::now();
+                            lock.write();
+                            time_table.write = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 6
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 7
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.read();
+                            barrier_all.wait();
+                            // ...1-6
+                            barrier_all.wait();
+                            // 7
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    let read_all = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            let before = Instant::now();
+                            lock.read();
+                            time_table.read = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_workers.wait();
+                            // 3
+                            let before = Instant::now();
+                            lock.read_all();
+                            time_table.read_all = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 4
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 5
+                            lock.write();
+                            time_table.write = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 6
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...7
+                            barrier_all.wait();
+                            // 8
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.read_all();
+                            barrier_all.wait();
+                            // ...1-4
+                            barrier_all.wait();
+                            // 5-6
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 7
+                            lock.read_all();
+                            barrier_all.wait();
+                            // 8
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    let write = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            let before = Instant::now();
+                            lock.read();
+                            time_table.read = before.elapsed().as_nanos();
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 3
+                            lock.read_all();
+                            time_table.read_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 4
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...5
+                            barrier_all.wait();
+                            // 6
+                            let before = Instant::now();
+                            lock.write();
+                            time_table.write = before.elapsed().as_nanos();
+                            barrier_workers.wait();
+                            // 7
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 8
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.write();
+                            barrier_all.wait();
+                            // ...1-2
+                            barrier_all.wait();
+                            // 3-4
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 5
+                            lock.write();
+                            barrier_all.wait();
+                            // ...6-7
+                            barrier_all.wait();
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    let write_all = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            lock.read();
+                            time_table.read = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...3
+                            barrier_all.wait();
+                            // 4
+                            lock.read_all();
+                            time_table.read_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 5
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...6
+                            barrier_all.wait();
+                            // 7
+                            lock.write();
+                            time_table.write = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 8
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...9
+                            barrier_all.wait();
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.write_all();
+                            barrier_all.wait();
+                            // 1-2
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 3
+                            lock.write_all();
+                            barrier_all.wait();
+                            // 4-5
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 6
+                            lock.write_all();
+                            barrier_all.wait();
+                            // 7-8
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 9
+                            lock.write_all();
+                            barrier_all.wait();
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    println!(
+                        "{:^21}|{:^21}|{:^21}|{:^21}|{:^21}\n\
+                         ---------------------|---------------------|---------------------|---------------------|---------------------\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                        ",
+                        "create\\drop",
+                        "read",
+                        "read_all",
+                        "wrire",
+                        "write_all",
+                        "read",
+                        read.read.mean,
+                        read.read.std,
+                        read.read_all.mean,
+                        read.read_all.std,
+                        read.write.mean,
+                        read.write.std,
+                        read.write_all.mean,
+                        read.write_all.std,
+                        "read_all",
+                        read_all.read.mean,
+                        read_all.read.std,
+                        read_all.read_all.mean,
+                        read_all.read_all.std,
+                        read_all.write.mean,
+                        read_all.write.std,
+                        read_all.write_all.mean,
+                        read_all.write_all.std,
+                        "write",
+                        write.read.mean,
+                        write.read.std,
+                        write.read_all.mean,
+                        write.read_all.std,
+                        write.write.mean,
+                        write.write.std,
+                        write.write_all.mean,
+                        write.write_all.std,
+                        "write_all",
+                        write_all.read.mean,
+                        write_all.read.std,
+                        write_all.read_all.mean,
+                        write_all.read_all.std,
+                        write_all.write.mean,
+                        write_all.write.std,
+                        write_all.write_all.mean,
+                        write_all.write_all.std,
+                    )
+                }
+            }
         }
     }
 
@@ -2180,6 +2630,7 @@ mod full_rw_lock {
             cell::UnsafeCell,
             hint,
             marker::PhantomPinned,
+            mem::MaybeUninit,
             pin::{Pin, pin},
             process,
             ptr::NonNull,
@@ -2194,7 +2645,6 @@ mod full_rw_lock {
 
         struct Anchor {
             next: UnsafeCell<Option<NonNull<Anchor>>>,
-            prev: UnsafeCell<Option<NonNull<Anchor>>>,
             handle: Thread,
             status: AtomicU8,
             phantom: PhantomPinned,
@@ -2205,26 +2655,18 @@ mod full_rw_lock {
             const BUSY: u8 = 1;
             const UNPARKED: u8 = 2;
 
-            fn new() -> Self {
-                Self {
-                    next: UnsafeCell::new(None),
-                    prev: UnsafeCell::new(None),
-                    handle: thread::current(),
-                    status: AtomicU8::new(Self::UNPARKED),
-                    phantom: PhantomPinned,
-                }
-            }
-
             /// Wait until another thread wakes this one up.
             ///
             /// # Safety
             ///
             /// There must not exist any mutable references to the anchor at this point.
             unsafe fn wait(self: &Pin<&Self>) {
+                //self.status.store(Self::PARKED, Ordering::Relaxed);
                 while self.status.load(Ordering::Relaxed) == Self::PARKED {
                     thread::park();
                 }
-                while self.status.load(Ordering::Relaxed) == Self::BUSY {
+                //atomic::fence(Ordering::Acquire);
+                while self.status.load(Ordering::Relaxed) != Self::UNPARKED {
                     hint::spin_loop();
                 }
                 atomic::fence(Ordering::Acquire);
@@ -2245,14 +2687,22 @@ mod full_rw_lock {
             /// - The `Anchor` passed to this function must call `wait` before
             ///   any future calls to `enter` with it.
             /// - All Previous and next calls to this function must be valid.
-            const unsafe fn enter(&mut self, anchor: Pin<&mut Anchor>) {
-                // SAFETY: nothing is moved out of `anchor`.
-                let anchor = unsafe { anchor.get_unchecked_mut() };
-                anchor.status = AtomicU8::new(Anchor::UNPARKED);
-                *anchor.next.get_mut() = None;
+            unsafe fn enter<'a, 'b>(&'a mut self, anchor: Pin<&'b mut MaybeUninit<Anchor>>) -> Pin<&'b Anchor> {
+                // SAFETY: nothing is moved out of `anchor_uninit`.
+                let anchor = unsafe {
+                    anchor.map_unchecked_mut(|anchor_uninit| {
+                        anchor_uninit.write(Anchor {
+                            next: UnsafeCell::new(None),
+                            handle: thread::current(),
+                            status: AtomicU8::new(Anchor::PARKED),
+                            phantom: PhantomPinned,
+                        })
+                    })
+                }
+                .into_ref();
                 match self {
                     matched @ &mut Queue { head: None, .. } => {
-                        let node = Some(NonNull::from_ref(anchor));
+                        let node = Some(NonNull::from_ref(anchor.as_ref().get_ref()));
                         matched.head = node;
                         matched.tail = node;
                     }
@@ -2260,10 +2710,9 @@ mod full_rw_lock {
                         head: Some(_),
                         tail: Some(tail),
                     } => {
-                        let node_non_null = NonNull::from_ref(anchor);
+                        let node_non_null = NonNull::from_ref(anchor.as_ref().get_ref());
                         // SAFETY: The access to the entire queue is exclusive.
                         unsafe {
-                            *anchor.prev.get() = Some(*tail);
                             *tail.as_ref().next.get() = Some(node_non_null);
                         }
                         *tail = node_non_null;
@@ -2271,6 +2720,7 @@ mod full_rw_lock {
                     // SAFETY: By construction, if `head` is non-null, so is `tail`.
                     _ => unsafe { hint::unreachable_unchecked() },
                 }
+                anchor
             }
 
             #[inline]
@@ -2287,7 +2737,7 @@ mod full_rw_lock {
                     unsafe {
                         self.head = *node.next.get();
                     }
-                    node.status.store(Anchor::BUSY, Ordering::Relaxed);
+                    node.status.store(Anchor::BUSY, Ordering::Release);
                     node.handle.unpark();
                     node.status.store(Anchor::UNPARKED, Ordering::Release);
                 }
@@ -2307,7 +2757,7 @@ mod full_rw_lock {
                     unsafe {
                         self.head = *node.next.get();
                     }
-                    node.status.store(Anchor::BUSY, Ordering::Relaxed);
+                    node.status.store(Anchor::BUSY, Ordering::Release);
                     node.handle.unpark();
                     node.status.store(Anchor::UNPARKED, Ordering::Release);
                 }
@@ -2367,14 +2817,11 @@ mod full_rw_lock {
                         Ordering::Relaxed,
                     ) {
                         Ok(_) => {
-                            let mut anchor = pin!(Anchor::new());
+                            let anchor = pin!(const { MaybeUninit::uninit() });
                             // SAFETY: - `state` provides synchronization - no other thread
                             //           can access the queue at this point.
                             //         - `anchor` calls `wait` once after this line.
-                            unsafe {
-                                (*self.queue.get()).enter(anchor.as_mut());
-                            }
-                            let anchor = anchor.into_ref();
+                            let anchor = unsafe { (*self.queue.get()).enter(anchor) };
 
                             while let Err(current) = self.state.compare_exchange_weak(
                                 *loaded,
@@ -2388,7 +2835,7 @@ mod full_rw_lock {
 
                             // SAFETY: Turned the only mutable reference in form of
                             //         a `Pin<&mut Anchor>` into a `Pin<&Anchor>`.
-                            unsafe { anchor.wait() }
+                            unsafe { anchor.wait() };
                         }
                         Err(current) => {
                             *loaded = current;
@@ -2402,8 +2849,49 @@ mod full_rw_lock {
                 let mut loaded = self.state.load(Ordering::Relaxed);
                 loop {
                     if loaded & Self::LOCK_MASK == Self::GLOBAL_WRITER {
-                        self.wait(&mut loaded);
-                        loaded = self.state.load(Ordering::Relaxed);
+                        // self.wait(&mut loaded);
+                        // // loaded = self.state.load(Ordering::Relaxed);
+                        if loaded & Self::QUEUE_STATE_MASK == Self::QUEUE_BUSY {
+                            loaded = self.state.load(Ordering::Relaxed);
+                            hint::spin_loop();
+                        } else {
+                            atomic::fence(Ordering::Acquire);
+                            match self.state.compare_exchange_weak(
+                                loaded,
+                                Self::QUEUE_BUSY | (loaded & Self::LOCK_MASK),
+                                Ordering::Acquire,
+                                Ordering::Relaxed,
+                            ) {
+                                Ok(_) => {
+                                    let mut anchor = pin!(const { MaybeUninit::uninit() });
+                                    // SAFETY: - `state` provides synchronization - no other thread
+                                    //           can access the queue at this point.
+                                    //         - `anchor` calls `wait` once after this line.
+                                    let anchor = unsafe { (*self.queue.get()).enter(anchor.as_mut()) };
+
+                                    while let Err(current) = self.state.compare_exchange_weak(
+                                        loaded,
+                                        Self::QUEUE_AVAILABLE | (loaded & Self::LOCK_MASK),
+                                        Ordering::Release,
+                                        Ordering::Relaxed,
+                                    ) {
+                                        loaded = current;
+                                        hint::spin_loop();
+                                    }
+
+                                    // SAFETY: Turned the only mutable reference in form of
+                                    //         a `Pin<&mut Anchor>` into a `Pin<&Anchor>`.
+                                    unsafe {
+                                        anchor.wait();
+                                        loaded = self.state.load(Ordering::Relaxed);
+                                    }
+                                }
+                                Err(current) => {
+                                    loaded = current;
+                                    hint::spin_loop();
+                                }
+                            }
+                        }
                     } else if crate::inner::unlikely(loaded & Self::FIRST_COUNTER_MASK == Self::FIRST_COUNTER_MASK) {
                         process::abort()
                     } else {
@@ -2453,8 +2941,49 @@ mod full_rw_lock {
                 let mut loaded = self.state.load(Ordering::Relaxed);
                 loop {
                     if loaded & Self::LOCK_STATE_MASK == Self::LOCK_MUTABLE {
-                        self.wait(&mut loaded);
-                        loaded = self.state.load(Ordering::Relaxed);
+                        // self.wait(&mut loaded);
+                        // loaded = self.state.load(Ordering::Relaxed);
+                        if loaded & Self::QUEUE_STATE_MASK == Self::QUEUE_BUSY {
+                            loaded = self.state.load(Ordering::Relaxed);
+                            hint::spin_loop();
+                        } else {
+                            atomic::fence(Ordering::Acquire);
+                            match self.state.compare_exchange_weak(
+                                loaded,
+                                Self::QUEUE_BUSY | (loaded & Self::LOCK_MASK),
+                                Ordering::Acquire,
+                                Ordering::Relaxed,
+                            ) {
+                                Ok(_) => {
+                                    let mut anchor = pin!(const { MaybeUninit::uninit() });
+                                    // SAFETY: - `state` provides synchronization - no other thread
+                                    //           can access the queue at this point.
+                                    //         - `anchor` calls `wait` once after this line.
+                                    let anchor = unsafe { (*self.queue.get()).enter(anchor.as_mut()) };
+
+                                    while let Err(current) = self.state.compare_exchange_weak(
+                                        loaded,
+                                        Self::QUEUE_AVAILABLE | (loaded & Self::LOCK_MASK),
+                                        Ordering::Release,
+                                        Ordering::Relaxed,
+                                    ) {
+                                        loaded = current;
+                                        hint::spin_loop();
+                                    }
+
+                                    // SAFETY: Turned the only mutable reference in form of
+                                    //         a `Pin<&mut Anchor>` into a `Pin<&Anchor>`.
+                                    unsafe {
+                                        anchor.wait();
+                                        loaded = self.state.load(Ordering::Relaxed);
+                                    }
+                                }
+                                Err(current) => {
+                                    loaded = current;
+                                    hint::spin_loop();
+                                }
+                            }
+                        }
                     } else if crate::inner::unlikely(loaded & Self::SECOND_COUNTER_MASK == Self::SECOND_COUNTER_MASK) {
                         process::abort()
                     } else {
@@ -2507,8 +3036,49 @@ mod full_rw_lock {
                         || (loaded & Self::LOCK_STATE_MASK != Self::LOCK_MUTABLE
                             && loaded & Self::SECOND_COUNTER_MASK != 0)
                     {
-                        self.wait(&mut loaded);
-                        loaded = self.state.load(Ordering::Relaxed);
+                        // self.wait(&mut loaded);
+                        // // loaded = self.state.load(Ordering::Relaxed);
+                        if loaded & Self::QUEUE_STATE_MASK == Self::QUEUE_BUSY {
+                            loaded = self.state.load(Ordering::Relaxed);
+                            hint::spin_loop();
+                        } else {
+                            atomic::fence(Ordering::Acquire);
+                            match self.state.compare_exchange_weak(
+                                loaded,
+                                Self::QUEUE_BUSY | (loaded & Self::LOCK_MASK),
+                                Ordering::Acquire,
+                                Ordering::Relaxed,
+                            ) {
+                                Ok(_) => {
+                                    let mut anchor = pin!(const { MaybeUninit::uninit() });
+                                    // SAFETY: - `state` provides synchronization - no other thread
+                                    //           can access the queue at this point.
+                                    //         - `anchor` calls `wait` once after this line.
+                                    let anchor = unsafe { (*self.queue.get()).enter(anchor.as_mut()) };
+
+                                    while let Err(current) = self.state.compare_exchange_weak(
+                                        loaded,
+                                        Self::QUEUE_AVAILABLE | (loaded & Self::LOCK_MASK),
+                                        Ordering::Release,
+                                        Ordering::Relaxed,
+                                    ) {
+                                        loaded = current;
+                                        hint::spin_loop();
+                                    }
+
+                                    // SAFETY: Turned the only mutable reference in form of
+                                    //         a `Pin<&mut Anchor>` into a `Pin<&Anchor>`.
+                                    unsafe {
+                                        anchor.wait();
+                                        loaded = self.state.load(Ordering::Relaxed);
+                                    }
+                                }
+                                Err(current) => {
+                                    loaded = current;
+                                    hint::spin_loop();
+                                }
+                            }
+                        }
                     } else if crate::inner::unlikely(loaded & Self::SECOND_COUNTER_MASK == Self::SECOND_COUNTER_MASK) {
                         process::abort()
                     } else {
@@ -2561,8 +3131,49 @@ mod full_rw_lock {
                 let mut loaded = self.state.load(Ordering::Relaxed);
                 loop {
                     if loaded & Self::LOCK_MASK != Self::EMPTY {
-                        self.wait(&mut loaded);
-                        loaded = self.state.load(Ordering::Relaxed);
+                        // self.wait(&mut loaded);
+                        // loaded = self.state.load(Ordering::Relaxed);
+                        if loaded & Self::QUEUE_STATE_MASK == Self::QUEUE_BUSY {
+                            loaded = self.state.load(Ordering::Relaxed);
+                            hint::spin_loop();
+                        } else {
+                            atomic::fence(Ordering::Acquire);
+                            match self.state.compare_exchange_weak(
+                                loaded,
+                                Self::QUEUE_BUSY | (loaded & Self::LOCK_MASK),
+                                Ordering::Acquire,
+                                Ordering::Relaxed,
+                            ) {
+                                Ok(_) => {
+                                    let mut anchor = pin!(const { MaybeUninit::uninit() });
+                                    // SAFETY: - `state` provides synchronization - no other thread
+                                    //           can access the queue at this point.
+                                    //         - `anchor` calls `wait` once after this line.
+                                    let anchor = unsafe { (*self.queue.get()).enter(anchor.as_mut()) };
+
+                                    while let Err(current) = self.state.compare_exchange_weak(
+                                        loaded,
+                                        Self::QUEUE_AVAILABLE | (loaded & Self::LOCK_MASK),
+                                        Ordering::Release,
+                                        Ordering::Relaxed,
+                                    ) {
+                                        loaded = current;
+                                        hint::spin_loop();
+                                    }
+
+                                    // SAFETY: Turned the only mutable reference in form of
+                                    //         a `Pin<&mut Anchor>` into a `Pin<&Anchor>`.
+                                    unsafe {
+                                        anchor.wait();
+                                        loaded = self.state.load(Ordering::Relaxed);
+                                    }
+                                }
+                                Err(current) => {
+                                    loaded = current;
+                                    hint::spin_loop();
+                                }
+                            }
+                        }
                     } else {
                         match self.state.compare_exchange_weak(
                             loaded,
@@ -2757,13 +3368,21 @@ mod full_rw_lock {
 
             pub(crate) unsafe fn drop_global_writer_unchecked(&self) {
                 let mut loaded = self.state.load(Ordering::Relaxed);
-                while let Err(current) = self.state.compare_exchange_weak(
-                    loaded,
-                    Self::QUEUE_BUSY | Self::EMPTY,
-                    Ordering::Acquire,
-                    Ordering::Relaxed,
-                ) {
-                    loaded = current;
+                loop {
+                    loaded = if loaded & Self::QUEUE_STATE_MASK == Self::QUEUE_AVAILABLE {
+                        if let Err(current) = self.state.compare_exchange_weak(
+                            loaded,
+                            Self::QUEUE_BUSY | Self::EMPTY,
+                            Ordering::Acquire,
+                            Ordering::Relaxed,
+                        ) {
+                            current
+                        } else {
+                            break;
+                        }
+                    } else {
+                        self.state.load(Ordering::Relaxed)
+                    };
                     hint::spin_loop();
                 }
 
@@ -3509,6 +4128,456 @@ mod full_rw_lock {
                         }
                         barrier.wait();
                     });
+                }
+            }
+
+            mod benches {
+                use super::super::InnerRwLock;
+                use std::{
+                    mem::{self, MaybeUninit},
+                    sync::{
+                        Barrier,
+                        atomic::{AtomicU128, Ordering},
+                    },
+                    thread,
+                    time::Instant,
+                };
+
+                #[derive(Clone, Copy, Default)]
+                struct TimeTable<T> {
+                    read: T,
+                    read_all: T,
+                    write: T,
+                    write_all: T,
+                }
+
+                #[derive(Clone, Copy, Default)]
+                struct Statistic<T> {
+                    mean: T,
+                    std: T,
+                }
+
+                fn bench_template<const NTRIALS: usize, const NTHREADS: usize, FWorkers, FMain>(
+                    workers: FWorkers,
+                    main: FMain,
+                ) -> TimeTable<Statistic<f64>>
+                where
+                    FWorkers:
+                        Fn(&InnerRwLock, &Barrier, &Barrier, &AtomicU128, &Instant, &mut TimeTable<u128>, bool) + Sync,
+                    FMain: Fn(&InnerRwLock, &Barrier, &AtomicU128, &Instant),
+                {
+                    let lock = InnerRwLock::new();
+                    let barrier_all = Barrier::new(NTHREADS + 1);
+                    let barrier_workers = Barrier::new(NTHREADS);
+                    let instant = AtomicU128::new(0);
+                    let instant_start = Instant::now();
+
+                    let mut times = Box::<[[TimeTable<u128>; NTRIALS]]>::new_uninit_slice(NTHREADS);
+                    for thread_trials in times.iter_mut() {
+                        let thread_trials =
+                            unsafe { mem::transmute::<_, &mut [MaybeUninit<TimeTable<u128>>; NTRIALS]>(thread_trials) };
+                        thread_trials.fill(MaybeUninit::new(TimeTable::default()));
+                    }
+                    let mut times = unsafe { times.assume_init() };
+
+                    thread::scope(|s| {
+                        for (i, trial_times) in times.iter_mut().enumerate() {
+                            let lock = &lock;
+                            let barrier_all = &barrier_all;
+                            let barrier_workers = &barrier_workers;
+                            let instant = &instant;
+                            let instant_start = &instant_start;
+                            let workers = &workers;
+                            s.spawn(move || {
+                                for trial_time_table in trial_times.iter_mut() {
+                                    workers(
+                                        lock,
+                                        barrier_all,
+                                        barrier_workers,
+                                        instant,
+                                        instant_start,
+                                        trial_time_table,
+                                        i == 0,
+                                    )
+                                }
+                            });
+                        }
+
+                        for _ in 0..NTRIALS {
+                            main(&lock, &barrier_all, &instant, &instant_start);
+                        }
+                    });
+
+                    macro_rules! square {
+                        ($n:expr) => {{ $n * $n }};
+                    }
+
+                    let mut stats = TimeTable::<Statistic<f64>>::default();
+                    for thread_trials in times.iter() {
+                        for trial in thread_trials {
+                            stats.read.mean += trial.read as f64;
+                            stats.read.std += square!(trial.read) as f64;
+                            stats.read_all.mean += trial.read_all as f64;
+                            stats.read_all.std += square!(trial.read_all) as f64;
+                            stats.write.mean += trial.write as f64;
+                            stats.write.std += square!(trial.write) as f64;
+                            stats.write_all.mean += trial.write_all as f64;
+                            stats.write_all.std += square!(trial.write_all) as f64;
+                        }
+                    }
+                    let total_runs = const { NTHREADS * NTRIALS } as f64;
+                    stats.read.mean /= total_runs;
+                    stats.read.std = ((stats.read.std / total_runs - square!(stats.read.mean)) / total_runs).sqrt();
+                    stats.read_all.mean /= total_runs;
+                    stats.read_all.std =
+                        ((stats.read_all.std / total_runs - square!(stats.read_all.mean)) / total_runs).sqrt();
+                    stats.write.mean /= total_runs;
+                    stats.write.std = ((stats.write.std / total_runs - square!(stats.write.mean)) / total_runs).sqrt();
+                    stats.write_all.mean /= NTRIALS as f64;
+                    stats.write_all.std = ((stats.write_all.std / (NTRIALS as f64) - square!(stats.write_all.mean))
+                        / (NTRIALS as f64))
+                        .sqrt();
+                    stats
+                }
+
+                #[test]
+                fn all() {
+                    const NTRIALS: usize = 2;
+                    const NTHREADS: usize = 1;
+
+                    let read = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            let before = Instant::now();
+                            lock.read();
+                            time_table.read = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_workers.wait();
+                            // 3
+                            let before = Instant::now();
+                            lock.read_all();
+                            time_table.read_all = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 4
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_workers.wait();
+                            // 5
+                            let before = Instant::now();
+                            lock.write();
+                            time_table.write = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 6
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 7
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.read();
+                            barrier_all.wait();
+                            // ...1-6
+                            barrier_all.wait();
+                            // 7
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    let read_all = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            let before = Instant::now();
+                            lock.read();
+                            time_table.read = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_workers.wait();
+                            // 3
+                            let before = Instant::now();
+                            lock.read_all();
+                            time_table.read_all = Instant::now().duration_since(before).as_nanos();
+                            barrier_workers.wait();
+                            // 4
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 5
+                            lock.write();
+                            time_table.write = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 6
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...7
+                            barrier_all.wait();
+                            // 8
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.read_all();
+                            barrier_all.wait();
+                            // ...1-4
+                            barrier_all.wait();
+                            // 5-6
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 7
+                            lock.read_all();
+                            barrier_all.wait();
+                            // 8
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    let write = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            let before = Instant::now();
+                            lock.read();
+                            time_table.read = before.elapsed().as_nanos();
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 3
+                            lock.read_all();
+                            time_table.read_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 4
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...5
+                            barrier_all.wait();
+                            // 6
+                            let before = Instant::now();
+                            lock.write();
+                            time_table.write = before.elapsed().as_nanos();
+                            barrier_workers.wait();
+                            // 7
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 8
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.write();
+                            barrier_all.wait();
+                            // ...1-2
+                            barrier_all.wait();
+                            // 3-4
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 5
+                            lock.write();
+                            barrier_all.wait();
+                            // ...6-7
+                            barrier_all.wait();
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    let write_all = bench_template::<NTRIALS, NTHREADS, _, _>(
+                        |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
+                            // ...0
+                            barrier_all.wait();
+                            // 1
+                            lock.read();
+                            time_table.read = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 2
+                            unsafe {
+                                lock.drop_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...3
+                            barrier_all.wait();
+                            // 4
+                            lock.read_all();
+                            time_table.read_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 5
+                            unsafe {
+                                lock.drop_global_reader_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...6
+                            barrier_all.wait();
+                            // 7
+                            lock.write();
+                            time_table.write = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                            barrier_workers.wait();
+                            // 8
+                            unsafe {
+                                lock.drop_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // ...9
+                            barrier_all.wait();
+                            if is_leading {
+                                lock.write_all();
+                                time_table.write_all =
+                                    instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                                unsafe {
+                                    lock.drop_global_writer_unchecked();
+                                }
+                            }
+                            barrier_all.wait();
+                        },
+                        |lock, barrier_all, instant, instant_start| {
+                            // 0
+                            lock.write_all();
+                            barrier_all.wait();
+                            // 1-2
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 3
+                            lock.write_all();
+                            barrier_all.wait();
+                            // 4-5
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 6
+                            lock.write_all();
+                            barrier_all.wait();
+                            // 7-8
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                            // 9
+                            lock.write_all();
+                            barrier_all.wait();
+                            instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
+                            unsafe {
+                                lock.drop_global_writer_unchecked();
+                            }
+                            barrier_all.wait();
+                        },
+                    );
+                    println!(
+                        "{:^21}|{:^21}|{:^21}|{:^21}|{:^21}\n\
+                         ---------------------|---------------------|---------------------|---------------------|---------------------\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                         {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
+                        ",
+                        "create\\drop",
+                        "read",
+                        "read_all",
+                        "wrire",
+                        "write_all",
+                        "read",
+                        read.read.mean,
+                        read.read.std,
+                        read.read_all.mean,
+                        read.read_all.std,
+                        read.write.mean,
+                        read.write.std,
+                        read.write_all.mean,
+                        read.write_all.std,
+                        "read_all",
+                        read_all.read.mean,
+                        read_all.read.std,
+                        read_all.read_all.mean,
+                        read_all.read_all.std,
+                        read_all.write.mean,
+                        read_all.write.std,
+                        read_all.write_all.mean,
+                        read_all.write_all.std,
+                        "write",
+                        write.read.mean,
+                        write.read.std,
+                        write.read_all.mean,
+                        write.read_all.std,
+                        write.write.mean,
+                        write.write.std,
+                        write.write_all.mean,
+                        write.write_all.std,
+                        "write_all",
+                        write_all.read.mean,
+                        write_all.read.std,
+                        write_all.read_all.mean,
+                        write_all.read_all.std,
+                        write_all.write.mean,
+                        write_all.write.std,
+                        write_all.write_all.mean,
+                        write_all.write_all.std,
+                    )
                 }
             }
         }

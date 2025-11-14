@@ -22,7 +22,7 @@
 //! These rules ensure no two locks will write to data that is being read at the same time.
 
 #![cfg_attr(feature = "strip_trim_prefix_suffix", feature(slice_pattern))]
-#![cfg_attr(test, feature(assert_matches))]
+#![cfg_attr(test, feature(assert_matches), feature(integer_atomics))]
 #![feature(ptr_metadata, allocator_api, one_sided_range)]
 #![allow(dead_code)]
 
