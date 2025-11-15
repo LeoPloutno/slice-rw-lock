@@ -1,5 +1,5 @@
 use super::lock::InnerSliceRwLock;
-use crate::inner::Allocation;
+use crate::core::Allocation;
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
@@ -75,7 +75,7 @@ pub(crate) mod mapped {
     };
 
     use super::SliceRwLockWriteGuard;
-    use crate::inner::{Allocation, Metadata};
+    use crate::core::{Allocation, Metadata};
 
     impl<'a, T> SliceRwLockWriteGuard<'a, T> {
         /// Makes a [`MappedSliceRwLockWriteGuard`] for a component of the borrowed data, e.g.
@@ -104,9 +104,7 @@ pub(crate) mod mapped {
             // and `orig` not holding a (mutable) reference to the element
             MappedSliceRwLockWriteGuard {
                 lock: unsafe { Allocation::get_metadata_disjoint(orig.0.allocation) },
-                data: NonNull::from_mut(f(unsafe {
-                    Allocation::get_subslice_mut_disjoint(orig.0.allocation, orig.0.start, orig.0.len)
-                })),
+                data: NonNull::from_mut(f(unsafe { Allocation::get_subslice_mut_disjoint(orig.0.allocation, orig.0.start, orig.0.len) })),
             }
         }
 

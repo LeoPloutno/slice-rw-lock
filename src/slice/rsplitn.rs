@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::{lock::SliceRwLock, panic_guard::PanicWriteGuard};
-use crate::inner::{self, Allocation};
+use crate::core::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to subslices separated by elements that match a predicate
 /// function, limited to a given number of splits, starting from the end of the slice.
@@ -92,11 +92,11 @@ where
 
         match self.remaining_iters {
             0 => {
-                inner::cold_path();
+                core::cold_path();
                 None
             }
             1 => {
-                inner::cold_path();
+                core::cold_path();
                 let end_old = self.end;
                 self.end = self.start;
                 self.remaining_iters = 0;
@@ -121,7 +121,7 @@ where
                     )
                 };
                 let (streak_start, remainig_iters) = loop {
-                    if inner::unlikely(self.start == self.end) {
+                    if core::unlikely(self.start == self.end) {
                         break (self.start, 0);
                     }
                     // SAFETY: Checked above that `start != end`, which implies `start < end`.
@@ -159,13 +159,7 @@ where
         } else {
             // In the extreme case, every element matches the predicate.
             // SAFETY: By construction, `start <= end`.
-            (
-                1,
-                Some(usize::min(
-                    self.remaining_iters,
-                    unsafe { self.end.unchecked_sub(self.start) } + 1,
-                )),
-            )
+            (1, Some(usize::min(self.remaining_iters, unsafe { self.end.unchecked_sub(self.start) } + 1)))
         }
     }
 }

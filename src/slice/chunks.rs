@@ -8,7 +8,7 @@ use std::{
 };
 
 use super::lock::SliceRwLock;
-use crate::inner::{self, Allocation};
+use crate::core::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to (non-overlapping) chunks (`chunk_size` elements at a
 /// time), starting at the beginning of the slice.
@@ -83,27 +83,15 @@ impl<T, A: Allocator + Clone> Iterator for Chunks<T, A> {
                 // SAFETY: Checked above that `chunk_size < end - start`, which implies `start + chunk_size < end`.
                 self.start = self.start.unchecked_add(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(
-                    start_old,
-                    self.chunk_size.get(),
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(SliceRwLock::new(start_old, self.chunk_size.get(), self.allocation, self.allocator.clone()))
             }
         } else if len > 0 {
-            inner::cold_path();
+            core::cold_path();
             self.start = self.end;
             // SAFETY: All invariants are upheld by construction.
-            unsafe {
-                Some(SliceRwLock::new(
-                    start_old,
-                    len,
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
-            }
+            unsafe { Some(SliceRwLock::new(start_old, len, self.allocation, self.allocator.clone())) }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
@@ -141,24 +129,12 @@ impl<T, A: Allocator + Clone> Iterator for Chunks<T, A> {
                         // SAFETY: Checked above that `chunk_size < end - start - skip`, which implies `start + skip + chunk_size < end`.
                         self.start = start_old.unchecked_add(self.chunk_size.get());
                         // SAFETY: All invariants are upheld by construction.
-                        Some(SliceRwLock::new(
-                            start_old,
-                            self.chunk_size.get(),
-                            self.allocation,
-                            self.allocator.clone(),
-                        ))
+                        Some(SliceRwLock::new(start_old, self.chunk_size.get(), self.allocation, self.allocator.clone()))
                     }
                 } else {
                     self.start = self.end;
                     // SAFETY: All invariants are upheld by construction.
-                    unsafe {
-                        Some(SliceRwLock::new(
-                            start_old,
-                            remainder,
-                            self.allocation,
-                            self.allocator.clone(),
-                        ))
-                    }
+                    unsafe { Some(SliceRwLock::new(start_old, remainder, self.allocation, self.allocator.clone())) }
                 }
             }
             Some(_) => {
@@ -166,7 +142,7 @@ impl<T, A: Allocator + Clone> Iterator for Chunks<T, A> {
                 None
             }
             _ => {
-                inner::cold_path();
+                core::cold_path();
                 None
             }
         }
@@ -182,38 +158,22 @@ impl<T, A: Allocator + Clone> DoubleEndedIterator for Chunks<T, A> {
         if self.chunk_size.get() < len {
             let chunk = {
                 let tmp = len % self.chunk_size;
-                if inner::unlikely(tmp == 0) {
-                    self.chunk_size.get()
-                } else {
-                    tmp
-                }
+                if core::unlikely(tmp == 0) { self.chunk_size.get() } else { tmp }
             };
             unsafe {
                 // SAFETY: Checked above that `chunk_size < end - start`, which implies
                 // `start < end - chunk_size <= end - len % chunk_size`
                 self.end = self.end.unchecked_sub(chunk);
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(
-                    self.end,
-                    chunk,
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(SliceRwLock::new(self.end, chunk, self.allocation, self.allocator.clone()))
             }
         } else if len > 0 {
-            inner::cold_path();
+            core::cold_path();
             self.end = self.start;
             // SAFETY: All invariants are upheld by construction.
-            unsafe {
-                Some(SliceRwLock::new(
-                    self.start,
-                    len,
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
-            }
+            unsafe { Some(SliceRwLock::new(self.start, len, self.allocation, self.allocator.clone())) }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }

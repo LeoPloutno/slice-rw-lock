@@ -1,5 +1,5 @@
 use super::lock::SliceRwLock;
-use crate::inner::{self, Allocation};
+use crate::core::{self, Allocation};
 use std::{
     alloc::{Allocator, Global},
     fmt::{self, Debug},
@@ -108,15 +108,10 @@ impl<T, A: Allocator + Clone> Iterator for RChunksExact<T, A> {
                 // Checked above that `start < end`, so they must be at least `chunk_size` apart.
                 self.end = self.end.unchecked_sub(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(
-                    self.end,
-                    self.chunk_size.get(),
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(SliceRwLock::new(self.end, self.chunk_size.get(), self.allocation, self.allocator.clone()))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
@@ -150,19 +145,14 @@ impl<T, A: Allocator + Clone> Iterator for RChunksExact<T, A> {
                 // of `chunk_size`, so `start` and `end - n * chunk_size` must be at least `chunk_size` apart.
                 self.end = self.end.unchecked_sub(skip).unchecked_sub(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(
-                    self.end,
-                    self.chunk_size.get(),
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(SliceRwLock::new(self.end, self.chunk_size.get(), self.allocation, self.allocator.clone()))
             },
             Some(_) => {
                 self.start = self.end;
                 None
             }
             _ => {
-                inner::cold_path();
+                core::cold_path();
                 None
             }
         }
@@ -181,15 +171,10 @@ impl<T, A: Allocator + Clone> DoubleEndedIterator for RChunksExact<T, A> {
                 // Checked above that `start < end`, so they must be at least `chunk_size` apart.
                 self.start = self.start.unchecked_add(self.chunk_size.get());
                 // SAFETY: All invariants are upheld by construction.
-                Some(SliceRwLock::new(
-                    start_old,
-                    self.chunk_size.get(),
-                    self.allocation,
-                    self.allocator.clone(),
-                ))
+                Some(SliceRwLock::new(start_old, self.chunk_size.get(), self.allocation, self.allocator.clone()))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }

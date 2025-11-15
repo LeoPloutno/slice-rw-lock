@@ -1,5 +1,5 @@
 use super::lock::InnerArrayRwLock;
-use crate::inner::Allocation;
+use crate::core::Allocation;
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
@@ -40,7 +40,7 @@ impl<T, const N: usize> Drop for ArrayRwLockReadAllGuard<'_, T, N> {
                 .lock
                 // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
                 // The existance of `self` guarantees that the counter is at least 1.
-                .drop_all_reader_unchecked();
+                .drop_global_reader_unchecked();
         }
     }
 }
@@ -56,7 +56,7 @@ unsafe impl<T: Sync, const N: usize> Sync for ArrayRwLockReadAllGuard<'_, T, N> 
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
     use super::ArrayRwLockReadAllGuard;
-    use crate::inner::{Allocation, Metadata};
+    use crate::core::{Allocation, Metadata};
     use std::{
         fmt::{self, Debug, Display},
         mem::ManuallyDrop,
@@ -217,7 +217,7 @@ pub(crate) mod mapped {
             // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
             // The existance of `self` guarantees that the counter is at least 1.
             unsafe {
-                self.lock.lock.drop_all_reader_unchecked();
+                self.lock.lock.drop_global_reader_unchecked();
             }
         }
     }

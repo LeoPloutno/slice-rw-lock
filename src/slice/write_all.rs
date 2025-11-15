@@ -1,5 +1,5 @@
 use super::lock::InnerSliceRwLock;
-use crate::inner::Allocation;
+use crate::core::Allocation;
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
@@ -51,7 +51,7 @@ impl<T> Drop for SliceRwLockWriteAllGuard<'_, T> {
         // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
         // The existance of `self` guarantees that the counter is at least 1.
         unsafe {
-            metadata.lock.drop_all_writer_unchecked();
+            metadata.lock.drop_global_writer_unchecked();
         }
     }
 }
@@ -67,7 +67,7 @@ unsafe impl<T: Sync> Sync for SliceRwLockWriteAllGuard<'_, T> {}
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
     use super::SliceRwLockWriteAllGuard;
-    use crate::inner::{Allocation, Metadata};
+    use crate::core::{Allocation, Metadata};
     use std::{
         fmt::{self, Debug, Display},
         mem::ManuallyDrop,
@@ -240,7 +240,7 @@ pub(crate) mod mapped {
             // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
             // The existance of `self` guarantees that the counter is at least 1.
             unsafe {
-                self.lock.lock.drop_all_writer_unchecked();
+                self.lock.lock.drop_global_writer_unchecked();
             }
         }
     }
@@ -280,7 +280,7 @@ impl<'a, T> SliceRwLockWriteAllGuard<'a, T> {
                 .lock
                 // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
                 // The existance of `s` guarantees that the counter is at least 1.
-                .downgrade_unchecked();
+                .downgrade_global_writer_unchecked();
         }
         let lock = {
             let ptr = s.0 as *const _;
@@ -309,7 +309,7 @@ impl<'a, T> SliceRwLockWriteAllGuard<'a, T> {
                 .lock
                 // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
                 // The existance of `s` guarantees that the counter is at least 1.
-                .downgrade_write_unchecked();
+                .downgrade_global_writer_unchecked();
         }
         let lock = {
             let ptr = s.0 as *mut _;

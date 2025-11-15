@@ -1,17 +1,16 @@
 #![allow(unused_imports)]
 use super::{
-    array_chunks::ArrayChunks, chunk_by::ChunkBy, chunks::Chunks, chunks_exact::ChunksExact, iter::Iter,
-    panic_guard::PanicWriteGuard, rarray_chunks::RArrayChunks, rchunks::RChunks, rchunks_exact::RChunksExact,
-    read_all::SliceRwLockReadAllGuard, rsplit::RSplit, rsplitn::RSplitN, split::Split, split_inclusive::SplitInclusive,
-    splitn::SplitN, write::SliceRwLockWriteGuard, write_all::SliceRwLockWriteAllGuard,
+    array_chunks::ArrayChunks, chunk_by::ChunkBy, chunks::Chunks, chunks_exact::ChunksExact, iter::Iter, panic_guard::PanicWriteGuard,
+    rarray_chunks::RArrayChunks, rchunks::RChunks, rchunks_exact::RChunksExact, read_all::SliceRwLockReadAllGuard, rsplit::RSplit, rsplitn::RSplitN,
+    split::Split, split_inclusive::SplitInclusive, splitn::SplitN, write::SliceRwLockWriteGuard, write_all::SliceRwLockWriteAllGuard,
 };
 use crate::{
     array::lock::ArrayRwLock,
+    core::{self, Allocation, InnerRwLock, State},
     element::lock::ElementRwLock,
-    inner::{self, Allocation, InnerRwLock, State},
 };
 #[cfg(feature = "strip_trim_prefix_suffix")]
-use core::slice::SlicePattern;
+use ::core::slice::SlicePattern;
 use std::{
     alloc::{AllocError, Allocator, Global, Layout},
     fmt::{self, Debug, Formatter},
@@ -47,12 +46,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     /// * `start + len` must either index an element of said array or point one element past its end.
     /// * The reference counter must not be zero when this function is called.
     #[inline]
-    pub(crate) const unsafe fn new_not_incremented(
-        start: usize,
-        len: usize,
-        allocation: NonNull<Allocation<T>>,
-        allocator: A,
-    ) -> Self {
+    pub(crate) const unsafe fn new_not_incremented(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         Self {
             allocator,
             inner: InnerSliceRwLock { start, len, allocation },
@@ -343,9 +337,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     #[inline]
     pub fn is_poisoned(&self) -> bool {
         // By construction, `allocation` points to live and valid data.
-        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }
-            .state
-            .is_poisoned()
+        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }.state.is_poisoned()
     }
 
     /// Clear the poisoned state from the allocation guarded by this lock.
@@ -358,9 +350,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     #[inline]
     pub fn clear_poison(&self) {
         // By construction, `allocation` points to live and valid data.
-        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }
-            .state
-            .clear_poison();
+        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }.state.clear_poison();
     }
 
     /// Returns the number of elements in the subslice guarded by this lock.
@@ -911,10 +901,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
             self.inner.start = self.inner.start.unchecked_add(mid);
             // SAFETY: User-upheld invariant.
             self.inner.len = self.inner.len.unchecked_sub(mid);
-            (
-                Self::new(start_old, mid, self.inner.allocation, self.allocator.clone()),
-                self,
-            )
+            (Self::new(start_old, mid, self.inner.allocation, self.allocator.clone()), self)
         }
     }
 
@@ -959,7 +946,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
             )
         };
         loop {
-            if inner::unlikely(curr == end) {
+            if core::unlikely(curr == end) {
                 drop(guard);
                 return Err(self);
             }
@@ -1021,7 +1008,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
             // and the accessed (sub)slice is locked behind local exclusive access.
             if pred(unsafe { Allocation::get_elem_disjoint(self.inner.allocation, curr) }) {
                 break;
-            } else if inner::unlikely(curr == self.inner.start) {
+            } else if core::unlikely(curr == self.inner.start) {
                 drop(guard);
                 return Err(self);
             } else {
@@ -1070,8 +1057,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
         lock.write();
         // SAFETY: By construction, `alocation` points to live and valid data.
         // Aliasing rules are upheld via synchronization.
-        let data =
-            unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
+        let data = unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
         let prefix = prefix.as_slice();
         let n = prefix.len();
         let ret = if n <= self.inner.len {
@@ -1118,8 +1104,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
         lock.write();
         // SAFETY: By construction, `alocation` points to live and valid data.
         // Aliasing rules are upheld via synchronization.
-        let data =
-            unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
+        let data = unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
         let suffix = suffix.as_slice();
         let n = suffix.len();
         let ret = if n <= self.inner.len {
@@ -1203,12 +1188,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
                     // SAFETY: Checked above that `bound_end <= len`.
                     self.inner.len = self.inner.len.unchecked_sub(bound_end);
                     // SAFETY: All invariants are upheld by construction.
-                    Some(Self::new(
-                        start_old,
-                        bound_end,
-                        self.inner.allocation,
-                        self.allocator.clone(),
-                    ))
+                    Some(Self::new(start_old, bound_end, self.inner.allocation, self.allocator.clone()))
                 }
             }
             (OneSidedRangeBound::EndInclusive, bound_end) if bound_end < self.inner.len => {
@@ -1497,14 +1477,10 @@ impl<T, A: Allocator> From<Box<[T], A>> for SliceRwLock<T, A> {
         let ptr_reallocated = Allocation::<MaybeUninit<T>>::allocate_uninit_in(len, &allocator);
         unsafe {
             // SAFETY: Allocated above.
-            let slice_ptr_reallocated = Allocation::get_slice(ptr_reallocated);
+            let slice_ptr_reallocated = Allocation::get_data_non_null(ptr_reallocated);
             // SAFETY: Both pointers point to live allocations produced by the same
             // allocator, so the data cannot overlap.
-            slice_ptr_reallocated
-                .to_raw_parts()
-                .0
-                .cast()
-                .copy_from_nonoverlapping(ptr, len);
+            slice_ptr_reallocated.to_raw_parts().0.cast().copy_from_nonoverlapping(ptr, len);
             // SAFETY: By construction, `ptr` points to an allocation produced by
             // `allocator` with a layout of an array of length `len`.
             allocator.deallocate(ptr.cast(), Layout::array::<T>(len).unwrap_unchecked());

@@ -1,7 +1,7 @@
 use super::{read_all::ArrayRwLockReadAllGuard, write::ArrayRwLockWriteGuard, write_all::ArrayRwLockWriteAllGuard};
 use crate::{
+    core::{Allocation, State},
     element::lock::ElementRwLock,
-    inner::{Allocation, State},
     slice::lock::SliceRwLock,
 };
 use std::{
@@ -36,11 +36,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     /// * `start + N` must either index an element of said array or point one element past its end.
     /// * The reference counter must not be zero when this function is called.
     #[inline]
-    pub(crate) const unsafe fn new_not_incremented(
-        start: usize,
-        allocation: NonNull<Allocation<T>>,
-        allocator: A,
-    ) -> Self {
+    pub(crate) const unsafe fn new_not_incremented(start: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         Self {
             allocator,
             inner: InnerArrayRwLock { start, allocation },
@@ -313,9 +309,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     #[inline]
     pub fn is_poisoned(&self) -> bool {
         // By construction, `allocation` points to live and valid data.
-        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }
-            .state
-            .is_poisoned()
+        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }.state.is_poisoned()
     }
 
     /// Clear the poisoned state from the allocation guarded by this lock.
@@ -328,9 +322,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     #[inline]
     pub fn clear_poison(&self) {
         // By construction, `allocation` points to live and valid data.
-        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }
-            .state
-            .clear_poison();
+        unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) }.state.clear_poison();
     }
 
     /// Returns the number of elements in the whole slice guarded by this lock.
@@ -440,12 +432,7 @@ impl<T, const N: usize, A: Allocator + Clone> ArrayRwLock<T, N, A> {
             let slice_len = N.unchecked_sub(M);
             (
                 // SAFETY: All invariants are upheld by cpnstruction.
-                SliceRwLock::new(
-                    orig.inner.start,
-                    slice_len,
-                    orig.inner.allocation,
-                    orig.allocator.clone(),
-                ),
+                SliceRwLock::new(orig.inner.start, slice_len, orig.inner.allocation, orig.allocator.clone()),
                 // SAFETY: All invariants are upheld by cpnstruction.
                 ArrayRwLock::new(
                     // SAFETY: By construction, `start + N` points within or right outside the allocation.
@@ -542,14 +529,10 @@ impl<T, const N: usize, A: Allocator> From<Box<[T; N], A>> for ArrayRwLock<T, N,
         let ptr_reallocated = Allocation::<MaybeUninit<T>>::allocate_uninit_in(N, &allocator);
         unsafe {
             // SAFETY: Allocated above.
-            let slice_ptr_reallocated = Allocation::get_slice(ptr_reallocated);
+            let slice_ptr_reallocated = Allocation::get_data_non_null(ptr_reallocated);
             // SAFETY: Both pointers point to live allocations produced by the same
             // allocator, so the data cannot overlap.
-            slice_ptr_reallocated
-                .to_raw_parts()
-                .0
-                .cast()
-                .copy_from_nonoverlapping(ptr, N);
+            slice_ptr_reallocated.to_raw_parts().0.cast().copy_from_nonoverlapping(ptr, N);
             // SAFETY: By construction, `ptr` points to an allocation produced by `allocator`.
             allocator.deallocate(ptr.cast(), Layout::new::<[T; N]>());
             let (ptr, metadata) = ptr_reallocated.to_raw_parts();

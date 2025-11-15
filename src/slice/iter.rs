@@ -10,7 +10,7 @@ use std::{
 use super::lock::SliceRwLock;
 use crate::{
     ElementRwLock,
-    inner::{self, Allocation},
+    core::{self, Allocation},
 };
 
 /// Element lock iterator.
@@ -33,12 +33,7 @@ impl<T, A: Allocator> Iter<T, A> {
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) const unsafe fn new_unchecked_not_increment(
-        start: usize,
-        len: usize,
-        allocation: NonNull<Allocation<T>>,
-        allocator: A,
-    ) -> Self {
+    pub(crate) const unsafe fn new_unchecked_not_increment(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         debug_assert!(start.checked_add(len).is_some());
 
         Self {
@@ -96,7 +91,7 @@ impl<T, A: Allocator + Clone> Iterator for Iter<T, A> {
                 Some(ElementRwLock::new(start_old, self.allocation, self.allocator.clone()))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
@@ -145,7 +140,7 @@ impl<T, A: Allocator + Clone> DoubleEndedIterator for Iter<T, A> {
                 Some(ElementRwLock::new(self.end, self.allocation, self.allocator.clone()))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }

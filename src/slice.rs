@@ -16,7 +16,7 @@ pub(crate) mod splitn;
 pub(crate) mod write;
 pub(crate) mod write_all;
 mod panic_guard {
-    use crate::inner::InnerRwLock;
+    use crate::core::InnerRwLock;
 
     /// A struct that handles locking and unlocking a lock despite panics.
     #[repr(transparent)]

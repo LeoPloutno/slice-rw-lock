@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::{lock::SliceRwLock, panic_guard::PanicWriteGuard};
-use crate::inner::{self, Allocation};
+use crate::core::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to subslices separated by elements that match a predicate
 /// function. Unlike `Split`, it contains the matched part as a terminator
@@ -42,13 +42,7 @@ where
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) unsafe fn new_unchecked_not_increment(
-        predicate: P,
-        start: usize,
-        len: usize,
-        allocation: NonNull<Allocation<T>>,
-        allocator: A,
-    ) -> Self {
+    pub(crate) unsafe fn new_unchecked_not_increment(predicate: P, start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         debug_assert!(start.checked_add(len).is_some());
 
         Self {
@@ -117,14 +111,13 @@ where
                 )
             };
             let streak_end = loop {
-                if inner::unlikely(self.start == self.end) {
+                if core::unlikely(self.start == self.end) {
                     break self.end;
                 }
                 // SAFETY: By construction, `allocation` points to live and valid data
                 // and the accessed (sub)slice is locked behind local exclusive access.
                 // Checked above that `start < end`.
-                let matches_pred =
-                    unsafe { (self.predicate)(Allocation::get_elem_disjoint(self.allocation, self.start)) };
+                let matches_pred = unsafe { (self.predicate)(Allocation::get_elem_disjoint(self.allocation, self.start)) };
                 // SAFETY: Checked above that `start < end`.
                 self.start = unsafe { self.start.unchecked_add(1) };
                 if matches_pred {
@@ -143,7 +136,7 @@ where
                 ))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
@@ -187,7 +180,7 @@ where
             // SAFETY: Checked above that `start < end`.
             self.end = unsafe { self.end.unchecked_sub(1) };
             let streak_start = loop {
-                if inner::unlikely(self.start == self.end) {
+                if core::unlikely(self.start == self.end) {
                     break self.start;
                 }
                 // SAFETY: Checked above that `start != end`, which implies `start < end`.
@@ -212,7 +205,7 @@ where
                 ))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }

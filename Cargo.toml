@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-atomic-wait = "1.1"
+atomic-wait = { version = "1.1", optional = true }
 
 [features]
-default = ["allocator_api", "mapped_guards", "downgrade", "slice_as_array", "split_array", "split_as_slice", "split_once", "strip_trim_prefix_suffix"]
+default = ["atomic_wait", "allocator_api", "mapped_guards", "downgrade", "slice_as_array", "split_array", "split_as_slice", "split_once", "strip_trim_prefix_suffix"]
+atomic_wait = ["dep:atomic-wait"]
 allocator_api = []
 mapped_guards = []
 downgrade = []

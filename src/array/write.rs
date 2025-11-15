@@ -1,5 +1,5 @@
 use super::lock::InnerArrayRwLock;
-use crate::inner::Allocation;
+use crate::core::Allocation;
 use std::{
     fmt::{self, Debug},
     marker::PhantomData,
@@ -67,7 +67,7 @@ unsafe impl<T: Sync, const N: usize> Sync for ArrayRwLockWriteGuard<'_, T, N> {}
 #[cfg(feature = "mapped_guards")]
 pub(crate) mod mapped {
     use super::ArrayRwLockWriteGuard;
-    use crate::inner::{Allocation, Metadata};
+    use crate::core::{Allocation, Metadata};
     use std::{
         fmt::{self, Debug, Display},
         mem::ManuallyDrop,

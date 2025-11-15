@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::{lock::SliceRwLock, panic_guard::PanicWriteGuard};
-use crate::inner::{self, Allocation};
+use crate::core::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to (non-overlapping) chunks separated by a predicate.
 ///
@@ -38,13 +38,7 @@ where
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) unsafe fn new_unchecked_not_increment(
-        predicate: P,
-        start: usize,
-        len: usize,
-        allocation: NonNull<Allocation<T>>,
-        allocator: A,
-    ) -> Self {
+    pub(crate) unsafe fn new_unchecked_not_increment(predicate: P, start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         debug_assert!(start.checked_add(len).is_some());
 
         Self {
@@ -101,8 +95,8 @@ where
                 // and the accessed (sub)slice is locked behind local exclusive access.
                 if unsafe {
                     (self.predicate)(
-                        Allocation::get_elem_disjoint(self.allocation, self.start),
-                        Allocation::get_elem_disjoint(self.allocation, start_new),
+                        Allocation::get_element_disjoint(self.allocation, self.start),
+                        Allocation::get_element_disjoint(self.allocation, start_new),
                     )
                 } {
                     self.start = start_new
@@ -124,7 +118,7 @@ where
                 ))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
@@ -170,8 +164,8 @@ where
                 // and the accessed (sub)slice is locked behind local exclusive access.
                 if unsafe {
                     (self.predicate)(
-                        Allocation::get_elem_disjoint(self.allocation, end_new),
-                        Allocation::get_elem_disjoint(self.allocation, self.end),
+                        Allocation::get_element_disjoint(self.allocation, end_new),
+                        Allocation::get_element_disjoint(self.allocation, self.end),
                     )
                 } {
                     self.end = end_new;
@@ -191,7 +185,7 @@ where
                 ))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }

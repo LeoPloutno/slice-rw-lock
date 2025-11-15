@@ -23,13 +23,14 @@
 
 #![cfg_attr(feature = "strip_trim_prefix_suffix", feature(slice_pattern))]
 #![cfg_attr(test, feature(assert_matches), feature(integer_atomics))]
-#![feature(ptr_metadata, allocator_api, one_sided_range)]
+#![feature(ptr_metadata, allocator_api, one_sided_range, unsize, coerce_unsized)]
 #![allow(dead_code)]
 
 mod array;
+mod core;
 mod element;
-mod inner;
 mod slice;
+mod whole;
 
 #[rustfmt::skip]
 pub use crate::{

@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::{lock::SliceRwLock, panic_guard::PanicWriteGuard};
-use crate::inner::{self, Allocation};
+use crate::core::{self, Allocation};
 
 /// An iterator over a `SliceRwLock` in locks to subslices separated by elements that match a predicate
 /// function.
@@ -42,13 +42,7 @@ where
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) unsafe fn new_unchecked_not_increment(
-        predicate: P,
-        start: usize,
-        len: usize,
-        allocation: NonNull<Allocation<T>>,
-        allocator: A,
-    ) -> Self {
+    pub(crate) unsafe fn new_unchecked_not_increment(predicate: P, start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         debug_assert!(start.checked_add(len).is_some());
 
         Self {
@@ -120,7 +114,7 @@ where
                 )
             };
             let streak_end = loop {
-                if inner::unlikely(self.start == self.end) {
+                if core::unlikely(self.start == self.end) {
                     self.finished = true;
                     break self.end;
                 }
@@ -148,7 +142,7 @@ where
                 ))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
@@ -189,7 +183,7 @@ where
                 )
             };
             let streak_start = loop {
-                if inner::unlikely(self.start == self.end) {
+                if core::unlikely(self.start == self.end) {
                     self.finished = true;
                     break self.start;
                 }
@@ -215,7 +209,7 @@ where
                 ))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }

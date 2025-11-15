@@ -1,6 +1,6 @@
 use crate::{
     array::lock::ArrayRwLock,
-    inner::{self, Allocation},
+    core::{self, Allocation},
     slice::lock::SliceRwLock,
 };
 use std::{
@@ -41,12 +41,7 @@ impl<T, const N: usize, A: Allocator> ArrayChunks<T, N, A> {
     /// # Safety
     /// See [`SliceRwLock::new`]
     #[inline]
-    pub(crate) const unsafe fn new_unchecked_not_increment(
-        start: usize,
-        len: usize,
-        allocation: NonNull<Allocation<T>>,
-        allocator: A,
-    ) -> Self {
+    pub(crate) const unsafe fn new_unchecked_not_increment(start: usize, len: usize, allocation: NonNull<Allocation<T>>, allocator: A) -> Self {
         // Shenanigans to bypass the `%` operator not being const.
         // SAFETY: User-upheld invariant.
         let remainder_len = unsafe { len.checked_rem(N).unwrap_unchecked() };
@@ -114,7 +109,7 @@ impl<T, const N: usize, A: Allocator + Clone> Iterator for ArrayChunks<T, N, A> 
                 Some(ArrayRwLock::new(start, self.allocation, self.allocator.clone()))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
@@ -158,7 +153,7 @@ impl<T, const N: usize, A: Allocator + Clone> Iterator for ArrayChunks<T, N, A> 
                 None
             }
             _ => {
-                inner::cold_path();
+                core::cold_path();
                 None
             }
         }
@@ -180,7 +175,7 @@ impl<T, const N: usize, A: Allocator + Clone> DoubleEndedIterator for ArrayChunk
                 Some(ArrayRwLock::new(self.end, self.allocation, self.allocator.clone()))
             }
         } else {
-            inner::cold_path();
+            core::cold_path();
             None
         }
     }
