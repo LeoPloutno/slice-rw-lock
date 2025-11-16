@@ -83,7 +83,7 @@ impl<T, A: Allocator> ElementRwLock<T, A> {
     pub fn read(&self) -> LockResult<ElementRwLockReadGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.read();
+        metadata.lock.read_subfield();
         let guard = ElementRwLockReadGuard {
             lock: &self.inner,
             phantom: PhantomData,
@@ -115,14 +115,14 @@ impl<T, A: Allocator> ElementRwLock<T, A> {
     /// in the returned error.
     ///
     /// This function will return the [`WouldBlock`] error if the `ElementRwLock` could
-    /// not be acquired because it was already locked with global exclusive access.
+    /// not be acquired because it was already locked with exclusive global access.
     ///
     /// [`Poisoned`]: TryLockError::Poisoned
     /// [`WouldBlock`]: TryLockError::WouldBlock
     pub fn try_read(&self) -> TryLockResult<ElementRwLockReadGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_read() {
+        if metadata.lock.try_read_subfield() {
             let guard = ElementRwLockReadGuard {
                 lock: &self.inner,
                 phantom: PhantomData,
@@ -155,7 +155,7 @@ impl<T, A: Allocator> ElementRwLock<T, A> {
     pub fn write(&mut self) -> LockResult<ElementRwLockWriteGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.write();
+        metadata.lock.write_subfield();
         let guard = ElementRwLockWriteGuard {
             lock: &self.inner,
             variance: PhantomData,
@@ -195,7 +195,7 @@ impl<T, A: Allocator> ElementRwLock<T, A> {
     pub fn try_write(&mut self) -> TryLockResult<ElementRwLockWriteGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_write() {
+        if metadata.lock.try_write_subfield() {
             let guard = ElementRwLockWriteGuard {
                 lock: &self.inner,
                 variance: PhantomData,

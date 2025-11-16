@@ -32,7 +32,7 @@ mod panic_guard {
         /// The guard returned by this function shall not be leaked in any way,
         /// otherwise undefined behaviour might occur.
         pub(super) unsafe fn new(lock: &'a InnerRwLock) -> Self {
-            lock.write();
+            lock.write_subfield();
             Self(lock)
         }
     }
@@ -41,7 +41,7 @@ mod panic_guard {
         fn drop(&mut self) {
             // SAFETY: Incremented the counter when created `self`.
             unsafe {
-                self.0.drop_writer_unchecked();
+                self.0.drop_subfield_writer_unchecked();
             }
         }
     }

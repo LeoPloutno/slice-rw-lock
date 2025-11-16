@@ -27,7 +27,7 @@ impl<T> Deref for ElementRwLockReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         //         Aliasing rules are upheld via synchronization.
         unsafe { Allocation::get_element_disjoint(self.lock.allocation, self.lock.index) }
     }
@@ -107,9 +107,9 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.lock.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 //         Aliasing rules are upheld via synchronization.
                 let data = f(Allocation::get_element_disjoint(orig.lock.allocation, orig.lock.index));
                 mem::forget(orig);
@@ -141,9 +141,9 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.lock.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 //         Aliasing rules are upheld via synchronization.
                 let data = f(Allocation::get_element_disjoint(orig.lock.allocation, orig.lock.index));
                 match data {

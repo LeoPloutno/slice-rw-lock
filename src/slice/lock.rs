@@ -150,7 +150,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     pub fn read_all(&self) -> LockResult<SliceRwLockReadAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.read_all();
+        metadata.lock.read_whole();
         let guard = SliceRwLockReadAllGuard(&self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
@@ -186,7 +186,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     pub fn try_read_all(&self) -> TryLockResult<SliceRwLockReadAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_read_all() {
+        if metadata.lock.try_read_whole() {
             let guard = SliceRwLockReadAllGuard(&self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -216,7 +216,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     pub fn write(&mut self) -> LockResult<SliceRwLockWriteGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.write();
+        metadata.lock.write_subfield();
         let guard = SliceRwLockWriteGuard(&mut self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
@@ -252,7 +252,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     pub fn try_write(&mut self) -> TryLockResult<SliceRwLockWriteGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_write() {
+        if metadata.lock.try_write_subfield() {
             let guard = SliceRwLockWriteGuard(&mut self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -281,7 +281,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     pub fn write_all(&mut self) -> LockResult<SliceRwLockWriteAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.write_all();
+        metadata.lock.write_whole();
         let guard = SliceRwLockWriteAllGuard(&mut self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
@@ -317,7 +317,7 @@ impl<T, A: Allocator> SliceRwLock<T, A> {
     pub fn try_write_all(&mut self) -> TryLockResult<SliceRwLockWriteAllGuard<'_, T>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_write_all() {
+        if metadata.lock.try_write_whole() {
             let guard = SliceRwLockWriteAllGuard(&mut self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -1054,7 +1054,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
     {
         // SAFETY: By construction, `allocation` points to live and valid data.
         let lock = unsafe { &Allocation::get_metadata_disjoint(self.inner.allocation).lock };
-        lock.write();
+        lock.write_subfield();
         // SAFETY: By construction, `alocation` points to live and valid data.
         // Aliasing rules are upheld via synchronization.
         let data = unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
@@ -1079,7 +1079,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
         };
         // SAFETY: Locked the slice with `write` access previously.
         unsafe {
-            lock.drop_writer_unchecked();
+            lock.drop_subfield_writer_unchecked();
         }
         ret
     }
@@ -1101,7 +1101,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
     {
         // SAFETY: By construction, `allocation` points to live and valid data.
         let lock = unsafe { &Allocation::get_metadata_disjoint(self.inner.allocation).lock };
-        lock.write();
+        lock.write_subfield();
         // SAFETY: By construction, `alocation` points to live and valid data.
         // Aliasing rules are upheld via synchronization.
         let data = unsafe { Allocation::get_subslice_disjoint(self.inner.allocation, self.inner.start, self.inner.len) };
@@ -1124,7 +1124,7 @@ impl<T, A: Allocator + Clone> SliceRwLock<T, A> {
         };
         // SAFETY: Locked the slice with `write` access previously.
         unsafe {
-            lock.drop_writer_unchecked();
+            lock.drop_subfield_writer_unchecked();
         }
         ret
     }

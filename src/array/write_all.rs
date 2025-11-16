@@ -27,7 +27,7 @@ impl<T, const N: usize> Deref for ArrayRwLockWriteAllGuard<'_, T, N> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         // Aliasing rules are protected by synchronization.
         unsafe { &*Allocation::get_slice_mut_disjoint(self.0.allocation) }
     }
@@ -35,7 +35,7 @@ impl<T, const N: usize> Deref for ArrayRwLockWriteAllGuard<'_, T, N> {
 
 impl<T, const N: usize> DerefMut for ArrayRwLockWriteAllGuard<'_, T, N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         // Aliasing rules are protected by synchronization.
         unsafe { Allocation::get_slice_mut_disjoint(self.0.allocation) }
     }
@@ -43,7 +43,7 @@ impl<T, const N: usize> DerefMut for ArrayRwLockWriteAllGuard<'_, T, N> {
 
 impl<T, const N: usize> Drop for ArrayRwLockWriteAllGuard<'_, T, N> {
     fn drop(&mut self) {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.0.allocation) };
         if thread::panicking() {
             metadata.state.poison();

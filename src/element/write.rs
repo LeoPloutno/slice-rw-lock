@@ -41,7 +41,7 @@ impl<'a, T> ElementRwLockWriteGuard<'a, T> {
         let lock = s.lock;
         mem::forget(s);
         unsafe {
-            // SAFETY: By construction `allocation` points to live and valid data.
+            // SAFETY: By construction, `allocation` points to live and valid data.
             Allocation::get_metadata_disjoint(lock.allocation)
                 .lock
                 // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
@@ -56,7 +56,7 @@ impl<T> Deref for ElementRwLockWriteGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         //         Aliasing rules are upheld via synchronization.
         unsafe { Allocation::get_element_disjoint(self.lock.allocation, self.lock.index) }
     }
@@ -64,7 +64,7 @@ impl<T> Deref for ElementRwLockWriteGuard<'_, T> {
 
 impl<T> DerefMut for ElementRwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         //         Aliasing rules are upheld via by synchronization.
         unsafe { Allocation::get_element_mut_disjoint(self.lock.allocation, self.lock.index) }
     }
@@ -72,7 +72,7 @@ impl<T> DerefMut for ElementRwLockWriteGuard<'_, T> {
 
 impl<T> Drop for ElementRwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.lock.allocation) };
         if thread::panicking() {
             metadata.state.poison();
@@ -148,9 +148,9 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.lock.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 //         Aliasing rules are upheld via synchronization.
                 let data = NonNull::from_mut(f(Allocation::get_element_mut_disjoint(orig.lock.allocation, orig.lock.index)));
                 mem::forget(orig);
@@ -182,9 +182,9 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.lock.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 //         Aliasing rules are upheld via synchronization.
                 let data = f(Allocation::get_element_mut_disjoint(orig.lock.allocation, orig.lock.index));
                 match data {

@@ -22,14 +22,12 @@ use std::{
 #[clippy::has_significant_drop]
 pub struct WholeRwLockWriteGuard<'a, T: ?Sized + 'a> {
     pub(super) allocation: NonNull<Allocation<T>>,
-    pub(super) variance: PhantomData<&'a mut ()>,
-    // For opting-out of `Send`.
-    pub(super) phantom: PhantomData<*const ()>,
+    pub(super) variance: PhantomData<&'a mut T>,
 }
 
 #[cfg(feature = "downgrade")]
 impl<'a, T> WholeRwLockWriteGuard<'a, T> {
-    /// Downgrades a subfield-write-locked `WholeRwLockWriteGuard` into a subfield-read-locked [`WholeRwLockReadGuard`].
+    /// Downgrades a global-write-locked `WholeRwLockWriteGuard` into a global-read-locked [`WholeRwLockReadGuard`].
     ///
     /// Since we have the `WholeRwLockWriteGuard`, the [`WholeRwLock`] must already be locked for writing, so
     /// this method cannot fail.
@@ -42,17 +40,16 @@ impl<'a, T> WholeRwLockWriteGuard<'a, T> {
         let allocation = s.allocation;
         mem::forget(s);
         unsafe {
-            // SAFETY: By construction `allocation` points to live and valid data.
+            // SAFETY: By construction, `allocation` points to live and valid data.
             Allocation::get_metadata_disjoint(allocation)
                 .lock
                 // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
                 //         The existance of `s` guarantees that the counter is at least 1.
-                .downgrade_global_writer_unchecked()
-        };
+                .downgrade_global_writer_unchecked();
+        }
         WholeRwLockReadGuard {
             allocation,
             variance: PhantomData,
-            phantom: PhantomData,
         }
     }
 }
@@ -61,23 +58,23 @@ impl<T> Deref for WholeRwLockWriteGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
-        //         Aliasing rules are upheld via synchronization.
+        // SAFETY: - By construction, `allocation` points to live and valid data.
+        //         - Aliasing rules are upheld via synchronization.
         unsafe { Allocation::get_data_ref_disjoint(self.allocation) }
     }
 }
 
 impl<T> DerefMut for WholeRwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
-        //         Aliasing rules are upheld via by synchronization.
+        // SAFETY: - By construction, `allocation` points to live and valid data.
+        //         - Aliasing rules are upheld via by synchronization.
         unsafe { Allocation::get_data_mut_disjoint(self.allocation) }
     }
 }
 
 impl<T: ?Sized> Drop for WholeRwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.allocation) };
         if thread::panicking() {
             metadata.state.poison();
@@ -130,7 +127,7 @@ pub(crate) mod mapped {
     pub struct MappedWholeRwLockWriteGuard<'a, T: ?Sized + 'a> {
         metadata: &'a Metadata,
         data: NonNull<T>,
-        phantom: PhantomData<*const ()>, // For opting-out of `Send`.
+        variance: PhantomData<&'a mut T>,
     }
 
     impl<'a, T> WholeRwLockWriteGuard<'a, T> {
@@ -153,16 +150,16 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
-                //         Aliasing rules are upheld via synchronization.
+                // SAFETY: - By construction, `allocation` points to live and valid data.
+                //         - Aliasing rules are upheld via synchronization.
                 let data = NonNull::from_mut(f(Allocation::get_data_mut_disjoint(orig.allocation)));
                 mem::forget(orig);
                 MappedWholeRwLockWriteGuard {
                     metadata,
                     data,
-                    phantom: PhantomData,
+                    variance: PhantomData,
                 }
             }
         }
@@ -187,10 +184,10 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
-                //         Aliasing rules are upheld via synchronization.
+                // SAFETY: - By construction, `allocation` points to live and valid data.
+                //         - Aliasing rules are upheld via synchronization.
                 let data = f(Allocation::get_data_mut_disjoint(orig.allocation));
                 match data {
                     Some(data) => {
@@ -198,7 +195,7 @@ pub(crate) mod mapped {
                         Ok(MappedWholeRwLockWriteGuard {
                             metadata,
                             data: NonNull::from_mut(data),
-                            phantom: PhantomData,
+                            variance: PhantomData,
                         })
                     }
                     None => Err(orig),
@@ -226,15 +223,15 @@ pub(crate) mod mapped {
             F: FnOnce(&mut T) -> &mut U,
             U: ?Sized,
         {
+            let metadata = orig.metadata;
             // SAFETY: The only way to obtain a pointer to this pointee is to transform the only
             //         guard protecting it via `map` or `filter_map`, which transfers ownership one-to-one.
             let data = NonNull::from_mut(f(unsafe { orig.data.as_mut() }));
-            let metadata = orig.metadata;
             mem::forget(orig);
             MappedWholeRwLockWriteGuard {
                 metadata,
                 data,
-                phantom: PhantomData,
+                variance: PhantomData,
             }
         }
 
@@ -267,7 +264,7 @@ pub(crate) mod mapped {
                     Ok(MappedWholeRwLockWriteGuard {
                         metadata,
                         data: NonNull::from_mut(data),
-                        phantom: PhantomData,
+                        variance: PhantomData,
                     })
                 }
                 None => Err(orig),
@@ -301,7 +298,7 @@ pub(crate) mod mapped {
             // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
             //         The existance of `self` guarantees that the counter is at least 1.
             unsafe {
-                self.metadata.lock.drop_writer_unchecked();
+                self.metadata.lock.drop_global_writer_unchecked();
             }
         }
     }

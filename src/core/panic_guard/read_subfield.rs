@@ -7,14 +7,14 @@ use crate::core::InnerRwLock;
 pub(crate) struct ReadPanicGuard<'a>(&'a InnerRwLock);
 
 impl<'a> ReadPanicGuard<'a> {
-    /// Constructs a guard that will call [`drop_reader_unchecked`] for
+    /// Constructs a guard that will call [`drop_subfield_reader_unchecked`] for
     /// the provided lock upon destruction.
     ///
     /// # Safety
     /// The lock must be locked with `read` access when the returned
     /// guard is destroyed.
     ///
-    /// [`drop_reader_unchecked`]: crate::core::rw_lock::InnerRwLock::drop_reader_unchecked
+    /// [`drop_subfield_reader_unchecked`]: crate::core::rw_lock::InnerRwLock::drop_subfield_reader_unchecked
     #[inline]
     pub(crate) const unsafe fn new(lock: &'a InnerRwLock) -> Self {
         Self(lock)
@@ -26,7 +26,7 @@ impl<'a> Drop for ReadPanicGuard<'a> {
     fn drop(&mut self) {
         // SAFETY: User-upheld invariant.
         unsafe {
-            self.0.drop_reader_unchecked();
+            self.0.drop_subfield_reader_unchecked();
         }
     }
 }

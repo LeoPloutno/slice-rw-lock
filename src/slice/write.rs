@@ -51,7 +51,7 @@ impl<T> Drop for SliceRwLockWriteGuard<'_, T> {
         unsafe {
             // SAFETY: The counter is guaranteed to be at least `1` because
             // when constructing `self` it has been incremented
-            metadata.lock.drop_writer_unchecked();
+            metadata.lock.drop_subfield_writer_unchecked();
         }
     }
 }
@@ -247,7 +247,7 @@ pub(crate) mod mapped {
             unsafe {
                 // SAFETY: The counter is guaranteed to be at least `1` because
                 // when constructing `self` it has been incremented
-                self.lock.lock.drop_writer_unchecked();
+                self.lock.lock.drop_subfield_writer_unchecked();
             }
         }
     }

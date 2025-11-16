@@ -122,7 +122,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     pub fn read_all(&self) -> LockResult<ArrayRwLockReadAllGuard<'_, T, N>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.read_all();
+        metadata.lock.read_whole();
         let guard = ArrayRwLockReadAllGuard(&self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
@@ -158,7 +158,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     pub fn try_read_all(&self) -> TryLockResult<ArrayRwLockReadAllGuard<'_, T, N>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_read_all() {
+        if metadata.lock.try_read_whole() {
             let guard = ArrayRwLockReadAllGuard(&self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -188,7 +188,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     pub fn write(&mut self) -> LockResult<ArrayRwLockWriteGuard<'_, T, N>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.write();
+        metadata.lock.write_subfield();
         let guard = ArrayRwLockWriteGuard(&mut self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
@@ -224,7 +224,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     pub fn try_write(&mut self) -> TryLockResult<ArrayRwLockWriteGuard<'_, T, N>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_write() {
+        if metadata.lock.try_write_subfield() {
             let guard = ArrayRwLockWriteGuard(&mut self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -253,7 +253,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     pub fn write_all(&mut self) -> LockResult<ArrayRwLockWriteAllGuard<'_, T, N>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        metadata.lock.write_all();
+        metadata.lock.write_whole();
         let guard = ArrayRwLockWriteAllGuard(&mut self.inner, PhantomData);
         if metadata.state.is_poisoned() {
             LockResult::Err(PoisonError::new(guard))
@@ -289,7 +289,7 @@ impl<T, const N: usize, A: Allocator> ArrayRwLock<T, N, A> {
     pub fn try_write_all(&mut self) -> TryLockResult<ArrayRwLockWriteAllGuard<'_, T, N>> {
         // By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.inner.allocation) };
-        if metadata.lock.try_write_all() {
+        if metadata.lock.try_write_whole() {
             let guard = ArrayRwLockWriteAllGuard(&mut self.inner, PhantomData);
             if metadata.state.is_poisoned() {
                 TryLockResult::Err(TryLockError::Poisoned(PoisonError::new(guard)))

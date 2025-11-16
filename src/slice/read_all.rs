@@ -26,7 +26,7 @@ impl<T> Deref for SliceRwLockReadAllGuard<'_, T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         // Aliasing rules are protected by synchronization.
         unsafe { Allocation::get_slice_disjoint(self.0.allocation) }
     }

@@ -19,17 +19,15 @@ use std::{
 #[clippy::has_significant_drop]
 pub struct WholeRwLockReadGuard<'a, T: ?Sized + 'a> {
     pub(super) allocation: NonNull<Allocation<T>>,
-    pub(super) variance: PhantomData<&'a ()>,
-    // For opting-out of `Send`.
-    pub(super) phantom: PhantomData<*const ()>,
+    pub(super) variance: PhantomData<&'a T>,
 }
 
 impl<T: ?Sized> Deref for WholeRwLockReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
-        //         Aliasing rules are upheld via synchronization.
+        // SAFETY: - By construction, `allocation` points to live and valid data.
+        //         - Aliasing rules are upheld via synchronization.
         unsafe { Allocation::get_data_ref_disjoint(self.allocation) }
     }
 }
@@ -108,10 +106,10 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
-                //         Aliasing rules are upheld via synchronization.
+                // SAFETY: - By construction, `allocation` points to live and valid data.
+                //         - Aliasing rules are upheld via synchronization.
                 let data = f(Allocation::get_data_ref_disjoint(orig.allocation));
                 mem::forget(orig);
                 MappedWholeRwLockReadGuard {
@@ -142,10 +140,10 @@ pub(crate) mod mapped {
             U: ?Sized,
         {
             unsafe {
-                // SAFETY: By construction `allocation` points to live and valid data.
+                // SAFETY: By construction, `allocation` points to live and valid data.
                 let metadata = Allocation::get_metadata_disjoint(orig.allocation);
-                // SAFETY: By construction `allocation` points to live and valid data.
-                //         Aliasing rules are upheld via synchronization.
+                // SAFETY: - By construction, `allocation` points to live and valid data.
+                //         - Aliasing rules are upheld via synchronization.
                 let data = f(Allocation::get_data_ref_disjoint(orig.allocation));
                 match data {
                     Some(data) => {
@@ -239,7 +237,7 @@ pub(crate) mod mapped {
             // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
             //         The existance of `self` guarantees that the counter is at least 1.
             unsafe {
-                self.metadata.lock.drop_reader_unchecked();
+                self.metadata.lock.drop_global_reader_unchecked();
             }
         }
     }

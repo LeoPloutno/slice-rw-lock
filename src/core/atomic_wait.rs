@@ -31,7 +31,7 @@ impl InnerRwLock {
         Self(AtomicU32::new(Self::EMPTY))
     }
 
-    pub(crate) fn read(&self) {
+    pub(crate) fn read_subfield(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::GLOBAL_WRITER {
@@ -57,7 +57,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) fn try_read(&self) -> bool {
+    pub(crate) fn try_read_subfield(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::GLOBAL_WRITER {
@@ -82,7 +82,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) fn read_all(&self) {
+    pub(crate) fn read_whole(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded & Self::FLAG_MASK == Self::FLAG_TRUE {
@@ -108,7 +108,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) fn try_read_all(&self) -> bool {
+    pub(crate) fn try_read_whole(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded & Self::FLAG_MASK == Self::FLAG_TRUE {
@@ -133,7 +133,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) fn write(&self) {
+    pub(crate) fn write_subfield(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::GLOBAL_WRITER || (loaded & Self::FLAG_MASK != Self::FLAG_TRUE && loaded & Self::SECOND_COUNTER_MASK != 0) {
@@ -159,7 +159,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) fn try_write(&self) -> bool {
+    pub(crate) fn try_write_subfield(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded == Self::GLOBAL_WRITER || (loaded & Self::FLAG_MASK != Self::FLAG_TRUE && loaded & Self::SECOND_COUNTER_MASK != 0) {
@@ -184,7 +184,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) fn write_all(&self) {
+    pub(crate) fn write_whole(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded != Self::EMPTY {
@@ -205,7 +205,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) fn try_write_all(&self) -> bool {
+    pub(crate) fn try_write_whole(&self) -> bool {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if loaded != Self::EMPTY {
@@ -225,7 +225,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) unsafe fn drop_reader_unchecked(&self) {
+    pub(crate) unsafe fn drop_subfield_reader_unchecked(&self) {
         if self.0.fetch_sub(Self::FIRST_COUNTER_ONE, Ordering::Release) == Self::FIRST_COUNTER_ONE {
             atomic::fence(Ordering::Acquire);
             atomic_wait::wake_one(&self.0);
@@ -239,7 +239,7 @@ impl InnerRwLock {
         }
     }
 
-    pub(crate) unsafe fn drop_writer_unchecked(&self) {
+    pub(crate) unsafe fn drop_subfield_writer_unchecked(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if (loaded & Self::SECOND_COUNTER_MASK) == Self::SECOND_COUNTER_ONE {
@@ -280,7 +280,7 @@ impl InnerRwLock {
     }
 
     #[cfg(feature = "downgrade")]
-    pub(crate) unsafe fn downgrade_writer_unchecked(&self) {
+    pub(crate) unsafe fn downgrade_subfield_writer_unchecked(&self) {
         let mut loaded = self.0.load(Ordering::Relaxed);
         loop {
             if core::unlikely(loaded & Self::FIRST_COUNTER_MASK == Self::FIRST_COUNTER_MASK) {
@@ -381,28 +381,28 @@ mod tests {
         use std::assert_matches::assert_matches;
 
         #[test]
-        fn read() {
+        fn read_subfield() {
             let lock = InnerRwLock::new();
 
-            lock.read();
+            lock.read_subfield();
             assert_matches!(lock.state(), LockState::Readers(ONE));
 
             unsafe {
-                lock.drop_reader_unchecked();
+                lock.drop_subfield_reader_unchecked();
             }
             assert_matches!(lock.state(), LockState::Empty);
 
-            lock.read();
+            lock.read_subfield();
 
-            assert!(lock.try_read());
+            assert!(lock.try_read_subfield());
             assert_matches!(lock.state(), LockState::Readers(TWO));
 
             unsafe {
-                lock.drop_reader_unchecked();
+                lock.drop_subfield_reader_unchecked();
             }
             assert_matches!(lock.state(), LockState::Readers(ONE));
 
-            lock.read_all();
+            lock.read_whole();
             assert_matches!(
                 lock.state(),
                 LockState::ReadersAndGlobalReaders {
@@ -415,22 +415,22 @@ mod tests {
             }
             assert_matches!(lock.state(), LockState::Readers(ONE));
 
-            lock.write();
+            lock.write_subfield();
             assert_matches!(lock.state(), LockState::ReadersAndWriters { readers: ONE, writers: ONE });
             unsafe {
-                lock.drop_writer_unchecked();
+                lock.drop_subfield_writer_unchecked();
             }
             assert_matches!(lock.state(), LockState::Readers(ONE));
 
-            assert!(!lock.try_write_all());
+            assert!(!lock.try_write_whole());
             assert_matches!(lock.state(), LockState::Readers(ONE));
         }
 
         #[test]
-        fn read_all() {
+        fn read_whole() {
             let lock = InnerRwLock::new();
 
-            lock.read_all();
+            lock.read_whole();
             assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
 
             unsafe {
@@ -438,9 +438,9 @@ mod tests {
             }
             assert_matches!(lock.state(), LockState::Empty);
 
-            lock.read_all();
+            lock.read_whole();
 
-            assert!(lock.try_read_all());
+            assert!(lock.try_read_whole());
             assert_matches!(lock.state(), LockState::GlobalReaders(TWO));
 
             unsafe {
@@ -448,7 +448,7 @@ mod tests {
             }
             assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
 
-            lock.read();
+            lock.read_subfield();
             assert_matches!(
                 lock.state(),
                 LockState::ReadersAndGlobalReaders {
@@ -458,59 +458,59 @@ mod tests {
             );
 
             unsafe {
-                lock.drop_reader_unchecked();
+                lock.drop_subfield_reader_unchecked();
             }
             assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
 
-            assert!(!lock.try_write());
+            assert!(!lock.try_write_subfield());
             assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
 
-            assert!(!lock.try_write_all());
+            assert!(!lock.try_write_whole());
             assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
         }
 
         #[test]
-        fn write() {
+        fn write_subfield() {
             let lock = InnerRwLock::new();
 
-            lock.write();
+            lock.write_subfield();
             assert_matches!(lock.state(), LockState::Writers(ONE));
 
             unsafe {
-                lock.drop_writer_unchecked();
+                lock.drop_subfield_writer_unchecked();
             }
             assert_matches!(lock.state(), LockState::Empty);
 
-            lock.write();
+            lock.write_subfield();
 
-            assert!(lock.try_write());
+            assert!(lock.try_write_subfield());
             assert_matches!(lock.state(), LockState::Writers(TWO));
 
             unsafe {
-                lock.drop_writer_unchecked();
+                lock.drop_subfield_writer_unchecked();
             }
             assert_matches!(lock.state(), LockState::Writers(ONE));
 
-            lock.read();
+            lock.read_subfield();
             assert_matches!(lock.state(), LockState::ReadersAndWriters { readers: ONE, writers: ONE });
 
             unsafe {
-                lock.drop_reader_unchecked();
+                lock.drop_subfield_reader_unchecked();
             }
             assert_matches!(lock.state(), LockState::Writers(ONE));
 
-            assert!(!lock.try_read_all());
+            assert!(!lock.try_read_whole());
             assert_matches!(lock.state(), LockState::Writers(ONE));
 
-            assert!(!lock.try_write_all());
+            assert!(!lock.try_write_whole());
             assert_matches!(lock.state(), LockState::Writers(ONE));
         }
 
         #[test]
-        fn write_all() {
+        fn wrire_whole() {
             let lock = InnerRwLock::new();
 
-            lock.write_all();
+            lock.write_whole();
             assert_matches!(lock.state(), LockState::GlobalWriter);
 
             unsafe {
@@ -518,35 +518,35 @@ mod tests {
             }
             assert_matches!(lock.state(), LockState::Empty);
 
-            lock.write_all();
+            lock.write_whole();
 
-            assert!(!lock.try_read());
+            assert!(!lock.try_read_subfield());
             assert_matches!(lock.state(), LockState::GlobalWriter);
 
-            assert!(!lock.try_read_all());
+            assert!(!lock.try_read_whole());
             assert_matches!(lock.state(), LockState::GlobalWriter);
 
-            assert!(!lock.try_write());
+            assert!(!lock.try_write_subfield());
             assert_matches!(lock.state(), LockState::GlobalWriter);
 
-            assert!(!lock.try_write_all());
+            assert!(!lock.try_write_whole());
             assert_matches!(lock.state(), LockState::GlobalWriter);
         }
 
         #[cfg(feature = "downgrade")]
         #[test]
-        fn downgrade_writer() {
+        fn downgrade_subfield_writer() {
             let lock = InnerRwLock::new();
-            lock.write();
+            lock.write_subfield();
 
             unsafe {
-                lock.downgrade_writer_unchecked();
+                lock.downgrade_subfield_writer_unchecked();
             }
             assert_matches!(lock.state(), LockState::Readers(ONE));
 
-            lock.write();
+            lock.write_subfield();
             unsafe {
-                lock.downgrade_writer_unchecked();
+                lock.downgrade_subfield_writer_unchecked();
             }
             assert_matches!(lock.state(), LockState::Readers(TWO));
         }
@@ -555,7 +555,7 @@ mod tests {
         #[test]
         fn downgrade_global_writer() {
             let lock = InnerRwLock::new();
-            lock.write_all();
+            lock.write_whole();
 
             unsafe {
                 lock.downgrade_global_writer_unchecked();
@@ -569,7 +569,7 @@ mod tests {
         use std::{assert_matches::assert_matches, sync::Barrier, thread};
 
         #[test]
-        fn read() {
+        fn read_subfield() {
             let lock = InnerRwLock::new();
             let barrier = Barrier::new(2);
 
@@ -581,7 +581,7 @@ mod tests {
                     assert_matches!(lock.state(), LockState::Readers(ONE));
 
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier.wait();
                     // ...2
@@ -590,7 +590,7 @@ mod tests {
                     assert_matches!(lock.state(), LockState::Readers(TWO));
 
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier.wait();
                     // ...4
@@ -614,7 +614,7 @@ mod tests {
                     assert_matches!(lock.state(), LockState::ReadersAndWriters { readers: ONE, writers: ONE });
 
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier.wait();
                     // ...8
@@ -624,43 +624,43 @@ mod tests {
                 });
 
                 // 0
-                lock.read();
+                lock.read_subfield();
                 barrier.wait();
                 // ...1
                 barrier.wait();
                 // 2
                 assert_matches!(lock.state(), LockState::Empty);
 
-                lock.read();
+                lock.read_subfield();
 
-                assert!(lock.try_read());
+                assert!(lock.try_read_subfield());
                 barrier.wait();
                 // ...3
                 barrier.wait();
                 // 4
                 assert_matches!(lock.state(), LockState::Readers(ONE));
 
-                lock.read_all();
+                lock.read_whole();
                 barrier.wait();
                 // ...5
                 barrier.wait();
                 // 6
                 assert_matches!(lock.state(), LockState::Readers(ONE));
 
-                lock.write();
+                lock.write_subfield();
                 barrier.wait();
                 // ...7
                 barrier.wait();
                 // 8
                 assert_matches!(lock.state(), LockState::Readers(ONE));
 
-                assert!(!lock.try_write_all());
+                assert!(!lock.try_write_whole());
                 barrier.wait();
             })
         }
 
         #[test]
-        fn read_all() {
+        fn read_whole() {
             let lock = InnerRwLock::new();
             let barrier = Barrier::new(2);
 
@@ -696,7 +696,7 @@ mod tests {
                     );
 
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier.wait();
                     // ...6
@@ -704,35 +704,35 @@ mod tests {
                     // 7
                     assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
 
-                    assert!(!lock.try_write_all());
+                    assert!(!lock.try_write_whole());
                     barrier.wait();
                 });
 
                 // 0
-                lock.read_all();
+                lock.read_whole();
                 barrier.wait();
                 // ...1
                 barrier.wait();
                 // 2
                 assert_matches!(lock.state(), LockState::Empty);
 
-                lock.read_all();
+                lock.read_whole();
 
-                assert!(lock.try_read_all());
+                assert!(lock.try_read_whole());
                 barrier.wait();
                 // ...3
                 barrier.wait();
                 // 4
                 assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
 
-                lock.read();
+                lock.read_subfield();
                 barrier.wait();
                 // ...5
                 barrier.wait();
                 // 6
                 assert_matches!(lock.state(), LockState::GlobalReaders(ONE));
 
-                assert!(!lock.try_write());
+                assert!(!lock.try_write_subfield());
                 barrier.wait();
                 // ...7
                 barrier.wait();
@@ -742,7 +742,7 @@ mod tests {
         }
 
         #[test]
-        fn write() {
+        fn write_subfield() {
             let lock = InnerRwLock::new();
             let barrier = Barrier::new(2);
 
@@ -754,7 +754,7 @@ mod tests {
                     assert_matches!(lock.state(), LockState::Writers(ONE));
 
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier.wait();
                     // ...2
@@ -763,7 +763,7 @@ mod tests {
                     assert_matches!(lock.state(), LockState::Writers(TWO));
 
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier.wait();
                     // ...4
@@ -772,7 +772,7 @@ mod tests {
                     assert_matches!(lock.state(), LockState::ReadersAndWriters { readers: ONE, writers: ONE });
 
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier.wait();
                     // ...6
@@ -780,35 +780,35 @@ mod tests {
                     // 7
                     assert_matches!(lock.state(), LockState::Writers(ONE));
 
-                    assert!(!lock.try_write_all());
+                    assert!(!lock.try_write_whole());
                     barrier.wait();
                 });
 
                 // 0
-                lock.write();
+                lock.write_subfield();
                 barrier.wait();
                 // ...1
                 barrier.wait();
                 // 2
                 assert_matches!(lock.state(), LockState::Empty);
 
-                lock.write();
+                lock.write_subfield();
 
-                assert!(lock.try_write());
+                assert!(lock.try_write_subfield());
                 barrier.wait();
                 // ...3
                 barrier.wait();
                 // 4
                 assert_matches!(lock.state(), LockState::Writers(ONE));
 
-                lock.read();
+                lock.read_subfield();
                 barrier.wait();
                 // ...5
                 barrier.wait();
                 // 6
                 assert_matches!(lock.state(), LockState::Writers(ONE));
 
-                assert!(!lock.try_read_all());
+                assert!(!lock.try_read_whole());
                 barrier.wait();
                 // ...7
                 barrier.wait();
@@ -818,7 +818,7 @@ mod tests {
         }
 
         #[test]
-        fn write_all() {
+        fn write_whole() {
             let lock = InnerRwLock::new();
             let barrier = Barrier::new(2);
 
@@ -838,35 +838,35 @@ mod tests {
                     // 3
                     assert_matches!(lock.state(), LockState::GlobalWriter);
 
-                    assert!(!lock.try_read_all());
+                    assert!(!lock.try_read_whole());
                     barrier.wait();
                     // ...4
                     barrier.wait();
                     // 5
                     assert_matches!(lock.state(), LockState::GlobalWriter);
 
-                    assert!(!lock.try_write_all());
+                    assert!(!lock.try_write_whole());
                     barrier.wait();
                 });
 
                 // 0
-                lock.write_all();
+                lock.write_whole();
                 barrier.wait();
                 // ...1
                 barrier.wait();
                 // 2
                 assert_matches!(lock.state(), LockState::Empty);
 
-                lock.write_all();
+                lock.write_whole();
 
-                assert!(!lock.try_read());
+                assert!(!lock.try_read_subfield());
                 barrier.wait();
                 // ...3
                 barrier.wait();
                 // 4
                 assert_matches!(lock.state(), LockState::GlobalWriter);
 
-                assert!(!lock.try_write());
+                assert!(!lock.try_write_subfield());
                 barrier.wait();
                 // ...5
                 barrier.wait();
@@ -877,7 +877,7 @@ mod tests {
 
         #[cfg(feature = "downgrade")]
         #[test]
-        fn downgrade_writer() {
+        fn downgrade_subfield_writer() {
             let lock = InnerRwLock::new();
             let barrier = Barrier::new(2);
 
@@ -888,18 +888,18 @@ mod tests {
                     // 1
                     assert_matches!(lock.state(), LockState::Readers(ONE));
 
-                    lock.write();
+                    lock.write_subfield();
                     unsafe {
-                        lock.downgrade_writer_unchecked();
+                        lock.downgrade_subfield_writer_unchecked();
                     }
                     barrier.wait();
                 });
 
                 // 0
-                lock.write();
+                lock.write_subfield();
 
                 unsafe {
-                    lock.downgrade_writer_unchecked();
+                    lock.downgrade_subfield_writer_unchecked();
                 }
                 barrier.wait();
                 // ...1
@@ -924,7 +924,7 @@ mod tests {
                 });
 
                 // 0
-                lock.write_all();
+                lock.write_whole();
 
                 unsafe {
                     lock.downgrade_global_writer_unchecked();
@@ -948,10 +948,10 @@ mod tests {
 
         #[derive(Clone, Copy, Default)]
         struct TimeTable<T> {
-            read: T,
-            read_all: T,
-            write: T,
-            write_all: T,
+            read_subfield: T,
+            read_whole: T,
+            write_subfield: T,
+            write_whole: T,
         }
 
         #[derive(Clone, Copy, Default)]
@@ -1005,25 +1005,25 @@ mod tests {
             let mut stats = TimeTable::<Statistic<f64>>::default();
             for thread_trials in times.iter() {
                 for trial in thread_trials {
-                    stats.read.mean += trial.read as f64;
-                    stats.read.std += square!(trial.read) as f64;
-                    stats.read_all.mean += trial.read_all as f64;
-                    stats.read_all.std += square!(trial.read_all) as f64;
-                    stats.write.mean += trial.write as f64;
-                    stats.write.std += square!(trial.write) as f64;
-                    stats.write_all.mean += trial.write_all as f64;
-                    stats.write_all.std += square!(trial.write_all) as f64;
+                    stats.read_subfield.mean += trial.read_subfield as f64;
+                    stats.read_subfield.std += square!(trial.read_subfield) as f64;
+                    stats.read_whole.mean += trial.read_whole as f64;
+                    stats.read_whole.std += square!(trial.read_whole) as f64;
+                    stats.write_subfield.mean += trial.write_subfield as f64;
+                    stats.write_subfield.std += square!(trial.write_subfield) as f64;
+                    stats.write_whole.mean += trial.write_whole as f64;
+                    stats.write_whole.std += square!(trial.write_whole) as f64;
                 }
             }
             let total_runs = const { NTHREADS * NTRIALS } as f64;
-            stats.read.mean /= total_runs;
-            stats.read.std = ((stats.read.std / total_runs - square!(stats.read.mean)) / total_runs).sqrt();
-            stats.read_all.mean /= total_runs;
-            stats.read_all.std = ((stats.read_all.std / total_runs - square!(stats.read_all.mean)) / total_runs).sqrt();
-            stats.write.mean /= total_runs;
-            stats.write.std = ((stats.write.std / total_runs - square!(stats.write.mean)) / total_runs).sqrt();
-            stats.write_all.mean /= NTRIALS as f64;
-            stats.write_all.std = ((stats.write_all.std / (NTRIALS as f64) - square!(stats.write_all.mean)) / (NTRIALS as f64)).sqrt();
+            stats.read_subfield.mean /= total_runs;
+            stats.read_subfield.std = ((stats.read_subfield.std / total_runs - square!(stats.read_subfield.mean)) / total_runs).sqrt();
+            stats.read_whole.mean /= total_runs;
+            stats.read_whole.std = ((stats.read_whole.std / total_runs - square!(stats.read_whole.mean)) / total_runs).sqrt();
+            stats.write_subfield.mean /= total_runs;
+            stats.write_subfield.std = ((stats.write_subfield.std / total_runs - square!(stats.write_subfield.mean)) / total_runs).sqrt();
+            stats.write_whole.mean /= NTRIALS as f64;
+            stats.write_whole.std = ((stats.write_whole.std / (NTRIALS as f64) - square!(stats.write_whole.mean)) / (NTRIALS as f64)).sqrt();
             stats
         }
 
@@ -1032,24 +1032,24 @@ mod tests {
             const NTRIALS: usize = 2_000_000;
             const NTHREADS: usize = 8;
 
-            let read = bench_template::<NTRIALS, NTHREADS, _, _>(
+            let read_subfield = bench_template::<NTRIALS, NTHREADS, _, _>(
                 |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
                     // ...0
                     barrier_all.wait();
                     // 1
                     let before = Instant::now();
-                    lock.read();
-                    time_table.read = Instant::now().duration_since(before).as_nanos();
+                    lock.read_subfield();
+                    time_table.read_subfield = Instant::now().duration_since(before).as_nanos();
                     barrier_workers.wait();
                     // 2
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier_workers.wait();
                     // 3
                     let before = Instant::now();
-                    lock.read_all();
-                    time_table.read_all = Instant::now().duration_since(before).as_nanos();
+                    lock.read_whole();
+                    time_table.read_whole = Instant::now().duration_since(before).as_nanos();
                     barrier_workers.wait();
                     // 4
                     unsafe {
@@ -1058,18 +1058,18 @@ mod tests {
                     barrier_workers.wait();
                     // 5
                     let before = Instant::now();
-                    lock.write();
-                    time_table.write = Instant::now().duration_since(before).as_nanos();
+                    lock.write_subfield();
+                    time_table.write_subfield = Instant::now().duration_since(before).as_nanos();
                     barrier_workers.wait();
                     // 6
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier_all.wait();
                     // 7
                     if is_leading {
-                        lock.write_all();
-                        time_table.write_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                        lock.write_whole();
+                        time_table.write_whole = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                         unsafe {
                             lock.drop_global_writer_unchecked();
                         }
@@ -1078,36 +1078,36 @@ mod tests {
                 },
                 |lock, barrier_all, instant, instant_start| {
                     // 0
-                    lock.read();
+                    lock.read_subfield();
                     barrier_all.wait();
                     // ...1-6
                     barrier_all.wait();
                     // 7
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier_all.wait();
                 },
             );
-            let read_all = bench_template::<NTRIALS, NTHREADS, _, _>(
+            let read_whole = bench_template::<NTRIALS, NTHREADS, _, _>(
                 |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
                     // ...0
                     barrier_all.wait();
                     // 1
                     let before = Instant::now();
-                    lock.read();
-                    time_table.read = Instant::now().duration_since(before).as_nanos();
+                    lock.read_subfield();
+                    time_table.read_subfield = Instant::now().duration_since(before).as_nanos();
                     barrier_workers.wait();
                     // 2
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier_workers.wait();
                     // 3
                     let before = Instant::now();
-                    lock.read_all();
-                    time_table.read_all = Instant::now().duration_since(before).as_nanos();
+                    lock.read_whole();
+                    time_table.read_whole = Instant::now().duration_since(before).as_nanos();
                     barrier_workers.wait();
                     // 4
                     unsafe {
@@ -1115,20 +1115,20 @@ mod tests {
                     }
                     barrier_all.wait();
                     // 5
-                    lock.write();
-                    time_table.write = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                    lock.write_subfield();
+                    time_table.write_subfield = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                     barrier_workers.wait();
                     // 6
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier_all.wait();
                     // ...7
                     barrier_all.wait();
                     // 8
                     if is_leading {
-                        lock.write_all();
-                        time_table.write_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                        lock.write_whole();
+                        time_table.write_whole = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                         unsafe {
                             lock.drop_global_writer_unchecked();
                         }
@@ -1137,7 +1137,7 @@ mod tests {
                 },
                 |lock, barrier_all, instant, instant_start| {
                     // 0
-                    lock.read_all();
+                    lock.read_whole();
                     barrier_all.wait();
                     // ...1-4
                     barrier_all.wait();
@@ -1148,7 +1148,7 @@ mod tests {
                     }
                     barrier_all.wait();
                     // 7
-                    lock.read_all();
+                    lock.read_whole();
                     barrier_all.wait();
                     // 8
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
@@ -1158,23 +1158,23 @@ mod tests {
                     barrier_all.wait();
                 },
             );
-            let write = bench_template::<NTRIALS, NTHREADS, _, _>(
+            let write_subfield = bench_template::<NTRIALS, NTHREADS, _, _>(
                 |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
                     // ...0
                     barrier_all.wait();
                     // 1
                     let before = Instant::now();
-                    lock.read();
-                    time_table.read = before.elapsed().as_nanos();
+                    lock.read_subfield();
+                    time_table.read_subfield = before.elapsed().as_nanos();
                     barrier_workers.wait();
                     // 2
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier_all.wait();
                     // 3
-                    lock.read_all();
-                    time_table.read_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                    lock.read_whole();
+                    time_table.read_whole = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                     barrier_workers.wait();
                     // 4
                     unsafe {
@@ -1185,18 +1185,18 @@ mod tests {
                     barrier_all.wait();
                     // 6
                     let before = Instant::now();
-                    lock.write();
-                    time_table.write = before.elapsed().as_nanos();
+                    lock.write_subfield();
+                    time_table.write_subfield = before.elapsed().as_nanos();
                     barrier_workers.wait();
                     // 7
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier_all.wait();
                     // 8
                     if is_leading {
-                        lock.write_all();
-                        time_table.write_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                        lock.write_whole();
+                        time_table.write_whole = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                         unsafe {
                             lock.drop_global_writer_unchecked();
                         }
@@ -1205,46 +1205,46 @@ mod tests {
                 },
                 |lock, barrier_all, instant, instant_start| {
                     // 0
-                    lock.write();
+                    lock.write_subfield();
                     barrier_all.wait();
                     // ...1-2
                     barrier_all.wait();
                     // 3-4
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier_all.wait();
                     // 5
-                    lock.write();
+                    lock.write_subfield();
                     barrier_all.wait();
                     // ...6-7
                     barrier_all.wait();
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier_all.wait();
                 },
             );
-            let write_all = bench_template::<NTRIALS, NTHREADS, _, _>(
+            let write_whole = bench_template::<NTRIALS, NTHREADS, _, _>(
                 |lock, barrier_all, barrier_workers, instant, instant_start, time_table, is_leading| {
                     // ...0
                     barrier_all.wait();
                     // 1
-                    lock.read();
-                    time_table.read = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                    lock.read_subfield();
+                    time_table.read_subfield = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                     barrier_workers.wait();
                     // 2
                     unsafe {
-                        lock.drop_reader_unchecked();
+                        lock.drop_subfield_reader_unchecked();
                     }
                     barrier_all.wait();
                     // ...3
                     barrier_all.wait();
                     // 4
-                    lock.read_all();
-                    time_table.read_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                    lock.read_whole();
+                    time_table.read_whole = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                     barrier_workers.wait();
                     // 5
                     unsafe {
@@ -1254,19 +1254,19 @@ mod tests {
                     // ...6
                     barrier_all.wait();
                     // 7
-                    lock.write();
-                    time_table.write = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                    lock.write_subfield();
+                    time_table.write_subfield = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                     barrier_workers.wait();
                     // 8
                     unsafe {
-                        lock.drop_writer_unchecked();
+                        lock.drop_subfield_writer_unchecked();
                     }
                     barrier_all.wait();
                     // ...9
                     barrier_all.wait();
                     if is_leading {
-                        lock.write_all();
-                        time_table.write_all = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
+                        lock.write_whole();
+                        time_table.write_whole = instant_start.elapsed().as_nanos() - instant.load(Ordering::Relaxed);
                         unsafe {
                             lock.drop_global_writer_unchecked();
                         }
@@ -1275,7 +1275,7 @@ mod tests {
                 },
                 |lock, barrier_all, instant, instant_start| {
                     // 0
-                    lock.write_all();
+                    lock.write_whole();
                     barrier_all.wait();
                     // 1-2
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
@@ -1284,7 +1284,7 @@ mod tests {
                     }
                     barrier_all.wait();
                     // 3
-                    lock.write_all();
+                    lock.write_whole();
                     barrier_all.wait();
                     // 4-5
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
@@ -1293,7 +1293,7 @@ mod tests {
                     }
                     barrier_all.wait();
                     // 6
-                    lock.write_all();
+                    lock.write_whole();
                     barrier_all.wait();
                     // 7-8
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
@@ -1302,7 +1302,7 @@ mod tests {
                     }
                     barrier_all.wait();
                     // 9
-                    lock.write_all();
+                    lock.write_whole();
                     barrier_all.wait();
                     instant.store(instant_start.elapsed().as_nanos(), Ordering::Relaxed);
                     unsafe {
@@ -1320,46 +1320,46 @@ mod tests {
                          {:^21}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}|{:>9.1} ± {:<9.1}\n\
                         ",
                 "create\\drop",
-                "read",
-                "read_all",
-                "write",
-                "write_all",
-                "read",
-                read.read.mean,
-                read.read.std,
-                read.read_all.mean,
-                read.read_all.std,
-                read.write.mean,
-                read.write.std,
-                read.write_all.mean,
-                read.write_all.std,
-                "read_all",
-                read_all.read.mean,
-                read_all.read.std,
-                read_all.read_all.mean,
-                read_all.read_all.std,
-                read_all.write.mean,
-                read_all.write.std,
-                read_all.write_all.mean,
-                read_all.write_all.std,
-                "write",
-                write.read.mean,
-                write.read.std,
-                write.read_all.mean,
-                write.read_all.std,
-                write.write.mean,
-                write.write.std,
-                write.write_all.mean,
-                write.write_all.std,
-                "write_all",
-                write_all.read.mean,
-                write_all.read.std,
-                write_all.read_all.mean,
-                write_all.read_all.std,
-                write_all.write.mean,
-                write_all.write.std,
-                write_all.write_all.mean,
-                write_all.write_all.std,
+                "read_subfield",
+                "read_whole",
+                "write_subfield",
+                "write_whole",
+                "read_subfield",
+                read_subfield.read_subfield.mean,
+                read_subfield.read_subfield.std,
+                read_subfield.read_whole.mean,
+                read_subfield.read_whole.std,
+                read_subfield.write_subfield.mean,
+                read_subfield.write_subfield.std,
+                read_subfield.write_whole.mean,
+                read_subfield.write_whole.std,
+                "read_whole",
+                read_whole.read_subfield.mean,
+                read_whole.read_subfield.std,
+                read_whole.read_whole.mean,
+                read_whole.read_whole.std,
+                read_whole.write_subfield.mean,
+                read_whole.write_subfield.std,
+                read_whole.write_whole.mean,
+                read_whole.write_whole.std,
+                "write_subfield",
+                write_subfield.read_subfield.mean,
+                write_subfield.read_subfield.std,
+                write_subfield.read_whole.mean,
+                write_subfield.read_whole.std,
+                write_subfield.write_subfield.mean,
+                write_subfield.write_subfield.std,
+                write_subfield.write_whole.mean,
+                write_subfield.write_whole.std,
+                "write_whole",
+                write_whole.read_subfield.mean,
+                write_whole.read_subfield.std,
+                write_whole.read_whole.mean,
+                write_whole.read_whole.std,
+                write_whole.write_subfield.mean,
+                write_whole.write_subfield.std,
+                write_whole.write_whole.mean,
+                write_whole.write_whole.std,
             )
         }
     }

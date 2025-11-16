@@ -27,7 +27,7 @@ impl<T, const N: usize> Deref for ArrayRwLockWriteGuard<'_, T, N> {
     type Target = [T; N];
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         // Aliasing rules are protected by synchronization.
         unsafe { Allocation::get_array_disjoint::<N>(self.0.allocation, self.0.start) }
     }
@@ -35,7 +35,7 @@ impl<T, const N: usize> Deref for ArrayRwLockWriteGuard<'_, T, N> {
 
 impl<T, const N: usize> DerefMut for ArrayRwLockWriteGuard<'_, T, N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         // Aliasing rules are protected by synchronization.
         unsafe { Allocation::get_array_mut_disjoint(self.0.allocation, self.0.start) }
     }
@@ -43,7 +43,7 @@ impl<T, const N: usize> DerefMut for ArrayRwLockWriteGuard<'_, T, N> {
 
 impl<T, const N: usize> Drop for ArrayRwLockWriteGuard<'_, T, N> {
     fn drop(&mut self) {
-        // SAFETY: By construction `allocation` points to live and valid data.
+        // SAFETY: By construction, `allocation` points to live and valid data.
         let metadata = unsafe { Allocation::get_metadata_disjoint(self.0.allocation) };
         if thread::panicking() {
             metadata.state.poison();
@@ -51,7 +51,7 @@ impl<T, const N: usize> Drop for ArrayRwLockWriteGuard<'_, T, N> {
         // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
         // The existance of `self` guarantees that the counter is at least 1.
         unsafe {
-            metadata.lock.drop_writer_unchecked();
+            metadata.lock.drop_subfield_writer_unchecked();
         }
     }
 }
@@ -240,7 +240,7 @@ pub(crate) mod mapped {
             // SAFETY: By construction, every increment of the counter is paired with exactly one decrement.
             // The existance of `self` guarantees that the counter is at least 1.
             unsafe {
-                self.lock.lock.drop_writer_unchecked();
+                self.lock.lock.drop_subfield_writer_unchecked();
             }
         }
     }

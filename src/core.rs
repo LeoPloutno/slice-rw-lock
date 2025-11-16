@@ -1,7 +1,7 @@
 pub(crate) use {
     alloc::Allocation,
     inner_rw_lock::InnerRwLock,
-    panic_guard::{read::ReadPanicGuard, read_all::ReadAllPanicGuard, write::WritePanicGuard, write_all::WriteAllPanicGuard},
+    panic_guard::{read_subfield::ReadPanicGuard, read_whole::ReadAllPanicGuard, write_subfield::WritePanicGuard, write_whole::WriteAllPanicGuard},
     state::State,
 };
 
@@ -187,8 +187,8 @@ impl Metadata {
 }
 
 mod panic_guard {
-    pub(super) mod read;
-    pub(super) mod read_all;
-    pub(super) mod write;
-    pub(super) mod write_all;
+    pub(super) mod read_subfield;
+    pub(super) mod read_whole;
+    pub(super) mod write_subfield;
+    pub(super) mod write_whole;
 }

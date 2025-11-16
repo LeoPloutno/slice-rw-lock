@@ -30,6 +30,7 @@ mod array;
 mod core;
 mod element;
 mod slice;
+mod subfield;
 mod whole;
 
 #[rustfmt::skip]
